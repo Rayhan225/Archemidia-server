@@ -1,0 +1,40 @@
+package com.archemidia.model;
+
+import java.util.Random;
+
+public class Monster extends WorldObject {
+    public String targetPlayerId = null;
+    public long lastAttackTime = 0;
+    public long aggroUntil = 0;
+    public double speed = 1.8;
+    public double dx = 0;
+    public double dy = 0;
+
+    // AI State
+    public enum State { IDLE, WANDER, CHASE, ATTACK, RETREAT, HURT } // Added RETREAT
+    public State state = State.IDLE;
+    public long stateTimer = 0;
+
+    // Personality
+    public enum Personality { NORMAL, AGGRESSIVE, SHY, LAZY }
+    public Personality personality;
+
+    // Logic Flags
+    public boolean isRetreating = false;
+
+    public Monster(String type, int x, int y) {
+        super(type, x, y);
+        this.maxHp = 10;
+        this.hp = this.maxHp;
+
+        // Assign random personality
+        this.personality = Personality.values()[new Random().nextInt(Personality.values().length)];
+
+        // Adjust stats based on personality
+        if (this.personality == Personality.AGGRESSIVE) {
+            this.speed = 2.2; // Faster
+        } else if (this.personality == Personality.LAZY) {
+            this.speed = 1.2; // Slower
+        }
+    }
+}
