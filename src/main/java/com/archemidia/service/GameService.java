@@ -24,10 +24,15 @@ public class GameService {
 
     private final int TILE_SIZE = 64;
     private final double PLAYER_RADIUS = 5.0;
-    private final int MAX_MONSTERS = 5;
+    private final int MAX_MONSTERS = 10;
+
     private final double CHASE_STOP_DIST = 10 * 64.0;
-    private final double ATTACK_RANGE = 64.0;
-    private final long ATTACK_COOLDOWN = 1500;
+    private final double ATTACK_RANGE = 30.0;
+
+    private final long ATTACK_COOLDOWN = 1000;
+    private final long DASH_COOLDOWN = 3000;
+    private final long JUMP_COOLDOWN = 4000;
+    private final long EVADE_COOLDOWN = 2000;
 
     public static final int MAP_RADIUS = 100;
     private final int SNOW_LIMIT = -30;
@@ -40,9 +45,10 @@ public class GameService {
     @PostConstruct
     public void init() {
         PersistenceService.SaveData data = persistenceService.loadData();
-        if (data != null && data.objects != null && !data.objects.isEmpty()) {
-            this.activeObjects.putAll(data.objects);
-            System.out.println(" [GameService] Loaded " + activeObjects.size() + " objects.");
+        if (data != null) {
+            if (data.objects != null) this.activeObjects.putAll(data.objects);
+            if (data.monsters != null) this.activeMonsters.putAll(data.monsters);
+            System.out.println(" [GameService] Loaded " + activeObjects.size() + " objects and " + activeMonsters.size() + " monsters.");
         } else {
             initializeFixedMap();
         }
@@ -50,12 +56,12 @@ public class GameService {
 
     @PreDestroy
     public void cleanup() {
-        persistenceService.saveData(activeObjects, playerStates);
+        persistenceService.saveData(activeObjects, playerStates, activeMonsters);
     }
 
     @Scheduled(fixedRate = 30000)
     public void autoSave() {
-        persistenceService.saveData(activeObjects, playerStates);
+        persistenceService.saveData(activeObjects, playerStates, activeMonsters);
     }
 
     private double getHashNoise(int x, int y) {
@@ -99,7 +105,6 @@ public class GameService {
                 }
             }
         }
-        System.out.println(" [GameService] Generated " + activeObjects.size() + " objects (Hash-Based 64-bit).");
     }
 
     private void addObject(String type, int x, int y) {
@@ -111,7 +116,7 @@ public class GameService {
     public void gameLoop() {
         long now = System.currentTimeMillis();
         if (activeMonsters.size() < MAX_MONSTERS) {
-            if (ThreadLocalRandom.current().nextDouble() < 0.05) {
+            if (ThreadLocalRandom.current().nextDouble() < 0.02) {
                 spawnRandomMonster();
             }
         }
@@ -122,14 +127,32 @@ public class GameService {
     }
 
     private void spawnRandomMonster() {
-        int bound = MAP_RADIUS - 10;
-        for(int i=0; i<3; i++) {
-            int rx = ThreadLocalRandom.current().nextInt(-bound, bound);
-            int ry = ThreadLocalRandom.current().nextInt(-bound, bound);
-            if (rx * rx + ry * ry > bound * bound) continue;
+        if (playerStates.isEmpty()) return;
 
-            double worldX = rx * TILE_SIZE + (TILE_SIZE / 2.0);
-            double worldY = ry * TILE_SIZE + (TILE_SIZE / 2.0);
+        List<PlayerState> players = new ArrayList<>(playerStates.values());
+        PlayerState randomPlayer = players.get(ThreadLocalRandom.current().nextInt(players.size()));
+
+        int spawnRadius = 25;
+        int minSpawnDist = 10;
+
+        int px = (int) (randomPlayer.getX() / TILE_SIZE);
+        int py = (int) (randomPlayer.getY() / TILE_SIZE);
+
+        for(int i=0; i<5; i++) {
+            int offsetX = ThreadLocalRandom.current().nextInt(-spawnRadius, spawnRadius);
+            int offsetY = ThreadLocalRandom.current().nextInt(-spawnRadius, spawnRadius);
+
+            if (Math.abs(offsetX) < minSpawnDist && Math.abs(offsetY) < minSpawnDist) continue;
+
+            int tx = px + offsetX;
+            int ty = py + offsetY;
+
+            if (getTerrainAt(tx, ty) != 0) continue;
+
+            if (tx * tx + ty * ty > MAP_RADIUS * MAP_RADIUS) continue;
+
+            double worldX = tx * TILE_SIZE + (TILE_SIZE / 2.0);
+            double worldY = ty * TILE_SIZE + (TILE_SIZE / 2.0);
 
             if (!isBlocked(worldX, worldY)) {
                 spawnMonster("Slime", (int)worldX, (int)worldY);
@@ -144,46 +167,131 @@ public class GameService {
             target = playerStates.get(m.targetPlayerId);
             if (target == null) {
                 m.targetPlayerId = null;
-                m.isRetreating = false;
+                m.isAggravated = (m.personality == Monster.Personality.AGGRESSIVE);
                 m.state = Monster.State.IDLE;
             }
         }
 
+        if (target != null && !m.isAggravated) target = null;
+
         if (target != null) {
             double dist = getDistance(m.x, m.y, target.getX(), target.getY());
-            if (dist > CHASE_STOP_DIST) {
-                m.targetPlayerId = null;
-                m.isRetreating = false;
-                m.state = Monster.State.IDLE;
+
+            // --- JUMP ATTACK ---
+            if (m.state == Monster.State.JUMP) {
+                if (now > m.stateTimer) {
+                    if (dist < 50.0) {
+                        target.damage(2);
+                        target.triggerKnockback(200);
+                    }
+                    m.state = Monster.State.IDLE;
+                    m.stateTimer = now + 800;
+                } else {
+                    moveMonsterSmart(m, Math.atan2(target.getY() - m.y, target.getX() - m.x), 5.0);
+                }
                 return;
             }
 
-            if (m.hp <= 3 && !m.isRetreating && m.hp > 0 && ThreadLocalRandom.current().nextDouble() < 0.02) {
-                m.isRetreating = true;
-                m.stateTimer = now + 3000;
+            // --- DASH ATTACK ---
+            if (m.state == Monster.State.DASH) {
+                if (now > m.stateTimer) {
+                    m.state = Monster.State.CHASE;
+                } else {
+                    if (dist < 40.0) {
+                        target.damage(3);
+                        target.triggerKnockback(600);
+                        m.state = Monster.State.CHASE;
+                    } else {
+                        moveMonsterSmart(m, Math.atan2(target.getY() - m.y, target.getX() - m.x), 14.0);
+                    }
+                    return;
+                }
             }
 
-            if (m.isRetreating) {
-                m.state = Monster.State.RETREAT;
-                if (now > m.stateTimer) m.isRetreating = false;
-                else moveMonsterSmart(m, Math.atan2(m.y - target.getY(), m.x - target.getX()));
+            // --- EVADE ---
+            if (m.state == Monster.State.EVADE) {
+                if (now > m.stateTimer) {
+                    m.state = Monster.State.CHASE;
+                } else {
+                    moveMonsterSmart(m, Math.atan2(m.y - target.getY(), m.x - target.getX()), 6.0);
+                }
+                return;
+            }
+
+            // --- DECISION MAKING ---
+            if (target.isAttacking() && dist < 120 && now - m.lastEvadeTime > EVADE_COOLDOWN) {
+                if (ThreadLocalRandom.current().nextDouble() < 0.60) {
+                    m.state = Monster.State.EVADE;
+                    m.lastEvadeTime = now;
+                    m.stateTimer = now + 400;
+                    return;
+                }
+            }
+
+            if (dist < 180 && now - m.lastJumpTime > JUMP_COOLDOWN) {
+                if (ThreadLocalRandom.current().nextDouble() < 0.05) {
+                    m.state = Monster.State.JUMP;
+                    m.lastJumpTime = now;
+                    m.stateTimer = now + 1200;
+                    return;
+                }
+            }
+
+            if (dist > 150 && dist < 400 && now - m.lastDashTime > DASH_COOLDOWN) {
+                if (ThreadLocalRandom.current().nextDouble() < 0.10) {
+                    m.state = Monster.State.DASH;
+                    m.lastDashTime = now;
+                    m.stateTimer = now + 600;
+                    return;
+                }
+            }
+
+            // --- STANDARD BEHAVIOR ---
+            if (dist > CHASE_STOP_DIST) {
+                m.targetPlayerId = null;
+                m.isAggravated = (m.personality == Monster.Personality.AGGRESSIVE);
+                m.state = Monster.State.IDLE;
             }
             else if (dist <= ATTACK_RANGE) {
                 if (now - m.lastAttackTime > ATTACK_COOLDOWN) {
                     m.state = Monster.State.ATTACK;
                     m.lastAttackTime = now;
-                    target.damage(1);
+                    if (m.isAggravated) target.damage(1);
                 }
                 m.dx = 0; m.dy = 0;
             }
             else {
                 m.state = Monster.State.CHASE;
-                moveMonsterSmart(m, Math.atan2(target.getY() - m.y, target.getX() - m.x));
+                moveMonsterSmart(m, Math.atan2(target.getY() - m.y, target.getX() - m.x), m.speed);
             }
         }
         else {
             handlePassiveBehavior(m, now);
         }
+    }
+
+    private void moveMonsterSmart(Monster m, double angle, double moveSpeed) {
+        double newX = m.x + Math.cos(angle) * moveSpeed;
+        double newY = m.y + Math.sin(angle) * moveSpeed;
+        if (!isBlocked(newX, newY)) {
+            m.x = (int)newX;
+            m.y = (int)newY;
+        } else {
+            for (double offset : new double[]{-0.6, 0.6}) {
+                double tryAngle = angle + offset;
+                double tryX = m.x + Math.cos(tryAngle) * moveSpeed;
+                double tryY = m.y + Math.sin(tryAngle) * moveSpeed;
+                if (!isBlocked(tryX, tryY)) {
+                    m.x = (int)tryX;
+                    m.y = (int)tryY;
+                    break;
+                }
+            }
+        }
+    }
+
+    private void moveMonsterSmart(Monster m, double angle) {
+        moveMonsterSmart(m, angle, m.speed);
     }
 
     private void handlePassiveBehavior(Monster m, long now) {
@@ -212,73 +320,35 @@ public class GameService {
         }
     }
 
-    private void moveMonsterSmart(Monster m, double angle) {
-        double newX = m.x + Math.cos(angle) * m.speed;
-        double newY = m.y + Math.sin(angle) * m.speed;
-        if (!isBlocked(newX, newY)) {
-            m.x = (int)newX;
-            m.y = (int)newY;
-        } else {
-            for (double offset : new double[]{-0.6, 0.6}) {
-                double tryAngle = angle + offset;
-                double tryX = m.x + Math.cos(tryAngle) * m.speed;
-                double tryY = m.y + Math.sin(tryAngle) * m.speed;
-                if (!isBlocked(tryX, tryY)) {
-                    m.x = (int)tryX;
-                    m.y = (int)tryY;
-                    break;
-                }
-            }
-        }
-    }
-
-    public PlayerState processMove(String sessionId, double requestedX, double requestedY, long seqId) {
-        PlayerState player = playerStates.get(sessionId);
-        if (player != null) {
-            if (isValidPosition(requestedX, requestedY) && !isPlayerBlocked(requestedX, requestedY)) {
-                player.setX(requestedX);
-                player.setY(requestedY);
-            }
-            else if (isValidPosition(requestedX, player.getY()) && !isPlayerBlocked(requestedX, player.getY())) {
-                player.setX(requestedX);
-            }
-            else if (isValidPosition(player.getX(), requestedY) && !isPlayerBlocked(player.getX(), requestedY)) {
-                player.setY(requestedY);
-            }
-            player.setLastProcessedSeqId(seqId);
-        }
-        return player;
-    }
-
     public WorldObject processInteraction(String sessionId, int targetX, int targetY) {
         PlayerState player = playerStates.get(sessionId);
         if (player == null) return null;
         double playerX = player.getX();
         double playerY = player.getY();
 
+        // --- DAMAGE CALCULATION ---
+        int damage = 1;
+        if (player.hasItem("Pickaxe", 1)) {
+            damage = 2; // REDUCED FROM 3 TO 2
+        }
+
         double hitCenterX = (targetX * TILE_SIZE) + (TILE_SIZE / 2.0);
         double hitCenterY = (targetY * TILE_SIZE) + (TILE_SIZE / 2.0);
 
+        Monster closestMonster = null;
+        double minMonDist = 64.0;
+
         for (Monster m : activeMonsters.values()) {
-            boolean hit = getDistance(hitCenterX, hitCenterY, m.x, m.y) < 64;
-            if (hit) {
-                m.hp--;
-                m.targetPlayerId = sessionId;
-                m.state = Monster.State.HURT;
-                m.stateTimer = System.currentTimeMillis() + 400;
-
-                double angle = Math.atan2(m.y - playerY, m.x - playerX);
-                double knX = m.x + Math.cos(angle) * 15.0;
-                double knY = m.y + Math.sin(angle) * 15.0;
-                if(!isBlocked(knX, knY)) { m.x = (int)knX; m.y = (int)knY; }
-
-                if (m.hp <= 0) {
-                    activeMonsters.remove(m.id);
-                    System.out.println("Monster Died: " + m.id);
-                    return m;
-                }
-                return m;
+            double d = getDistance(hitCenterX, hitCenterY, m.x, m.y);
+            if (d < minMonDist) {
+                minMonDist = d;
+                closestMonster = m;
             }
+        }
+
+        if (closestMonster != null) {
+            handleMonsterHit(closestMonster, sessionId, playerX, playerY, damage);
+            return closestMonster;
         }
 
         String directKey = targetX + "_" + targetY;
@@ -300,14 +370,67 @@ public class GameService {
             }
         }
 
-        if (targetObj == null) return null;
-
-        targetObj.hp--;
-        if (targetObj.hp <= 0) {
-            destroyedObjectIds.add(directKey);
-            activeObjects.remove(directKey);
+        if (targetObj != null) {
+            targetObj.hp -= damage; // Apply Damage
+            if (targetObj.hp <= 0) {
+                destroyedObjectIds.add(directKey);
+                activeObjects.remove(directKey);
+            }
         }
         return targetObj;
+    }
+
+    private void handleMonsterHit(Monster m, String sessionId, double attackerX, double attackerY, int damage) {
+        m.isAggravated = true;
+        m.targetPlayerId = sessionId;
+        m.hp -= damage; // Apply Damage
+        m.state = Monster.State.HURT;
+        m.stateTimer = System.currentTimeMillis() + 400;
+
+        double angle = Math.atan2(m.y - attackerY, m.x - attackerX);
+        double knX = m.x + Math.cos(angle) * 40.0;
+        double knY = m.y + Math.sin(angle) * 40.0;
+
+        for (Monster other : activeMonsters.values()) {
+            if (other == m) continue;
+            double dist = getDistance(knX, knY, other.x, other.y);
+            if (dist < 40) {
+                other.hp -= 1;
+                other.state = Monster.State.HURT;
+                other.stateTimer = System.currentTimeMillis() + 200;
+                double bumpAngle = Math.atan2(other.y - m.y, other.x - m.x);
+                other.x += Math.cos(bumpAngle) * 20;
+                other.y += Math.sin(bumpAngle) * 20;
+                knX = m.x + Math.cos(angle) * 10.0;
+                knY = m.y + Math.sin(angle) * 10.0;
+                break;
+            }
+        }
+
+        if(!isBlocked(knX, knY)) { m.x = (int)knX; m.y = (int)knY; }
+
+        if (m.hp <= 0) {
+            activeMonsters.remove(m.id);
+        }
+    }
+
+    // --- MOVEMENT ---
+    public PlayerState processMove(String sessionId, double requestedX, double requestedY, long seqId) {
+        PlayerState player = playerStates.get(sessionId);
+        if (player != null) {
+            if (isValidPosition(requestedX, requestedY) && !isPlayerBlocked(requestedX, requestedY)) {
+                player.setX(requestedX);
+                player.setY(requestedY);
+            }
+            else if (isValidPosition(requestedX, player.getY()) && !isPlayerBlocked(requestedX, player.getY())) {
+                player.setX(requestedX);
+            }
+            else if (isValidPosition(player.getX(), requestedY) && !isPlayerBlocked(player.getX(), requestedY)) {
+                player.setY(requestedY);
+            }
+            player.setLastProcessedSeqId(seqId);
+        }
+        return player;
     }
 
     private boolean isValidPosition(double x, double y) {
@@ -359,13 +482,42 @@ public class GameService {
 
     public PlayerState processPickup(String sessionId, String itemType) {
         PlayerState player = playerStates.get(sessionId);
-        if (player != null) player.addItem(itemType, 1);
+        if (player != null) {
+            int current = player.getInventory().getOrDefault(itemType, 0);
+            int max = 99;
+
+            if (itemType.equals("Pickaxe") || itemType.contains("Tool") || itemType.contains("Weapon")) {
+                max = 9;
+            } else if (itemType.equals("Crafting Table")) {
+                max = 1;
+            } else if (itemType.equals("Bonfire")) {
+                max = 10;
+            } else if (itemType.equals("Fence")) {
+                max = 100;
+            }
+
+            if (current < max) {
+                player.addItem(itemType, 1);
+            }
+        }
         return player;
     }
+
     public PlayerState processRemoveItem(String sessionId, String itemType, int amount) {
         PlayerState player = playerStates.get(sessionId);
-        if (player != null) player.removeItem(itemType, amount);
+        if (player != null) {
+            player.removeItem(itemType, amount);
+        }
         return player;
+    }
+
+    public DropResult dropItem(String sessionId, String itemType) {
+        PlayerState player = playerStates.get(sessionId);
+        if (player != null && player.hasItem(itemType, 1)) {
+            player.removeItem(itemType, 1);
+            return new DropResult(itemType, 1);
+        }
+        return null;
     }
 
     public boolean processCrafting(String sessionId, String recipe) {
@@ -374,19 +526,30 @@ public class GameService {
 
         if (recipe.equals("Pickaxe")) {
             if (player.hasItem("Wood", 3) && player.hasItem("Stone", 2) && player.hasItem("Rope", 1)) {
-                player.removeItem("Wood", 3); player.removeItem("Stone", 2); player.removeItem("Rope", 1);
-                player.addItem("Pickaxe", 1); return true;
+                int current = player.getInventory().getOrDefault("Pickaxe", 0);
+                if (current >= 9) return false;
+
+                player.removeItem("Wood", 3);
+                player.removeItem("Stone", 2);
+                player.removeItem("Rope", 1);
+                player.addItem("Pickaxe", 1);
+                return true;
             }
         }
         else if (recipe.equals("Bonfire")) {
             if (player.hasItem("Wood", 10) && player.hasItem("Stone", 5)) {
+                int current = player.getInventory().getOrDefault("Bonfire", 0);
+                if (current >= 10) return false;
+
                 player.removeItem("Wood", 10); player.removeItem("Stone", 5);
                 player.addItem("Bonfire", 1); return true;
             }
         }
-        // --- NEW RECIPE: FENCE ---
         else if (recipe.equals("Fence")) {
             if (player.hasItem("Wood", 2)) {
+                int current = player.getInventory().getOrDefault("Fence", 0);
+                if (current >= 100) return false;
+
                 player.removeItem("Wood", 2);
                 player.addItem("Fence", 1);
                 return true;
@@ -402,6 +565,11 @@ public class GameService {
         String objKey = x + "_" + y;
         if (activeObjects.containsKey(objKey)) return false;
         WorldObject obj = new WorldObject(type, x, y);
+
+        // --- FIX: Assign HP to Buildings ---
+        if (type.equals("Crafting Table") || type.equals("Bonfire")) obj.hp = 3;
+        if (type.equals("Fence")) obj.hp = 2;
+
         activeObjects.put(objKey, obj);
         player.removeItem(type, 1);
         return true;
@@ -411,7 +579,6 @@ public class GameService {
         String objKey = x + "_" + y;
         WorldObject obj = activeObjects.get(objKey);
         if (obj != null) {
-            // Updated to include Fence
             if (obj.type.equals("Crafting Table") || obj.type.equals("Bonfire") || obj.type.equals("Fence")) {
                 activeObjects.remove(objKey); destroyedObjectIds.add(objKey); return true;
             }
@@ -422,10 +589,9 @@ public class GameService {
     public List<DropResult> calculateDrops(String type, boolean destroyed) {
         List<DropResult> drops = new ArrayList<>();
         if (type.equals("Slime")) { drops.add(new DropResult("Rope", 1)); return drops; }
+
         if (type.equals("Crafting Table")) { drops.add(new DropResult("Crafting Table", 1)); return drops; }
         if (type.equals("Bonfire")) { drops.add(new DropResult("Bonfire", 1)); return drops; }
-
-        // --- NEW DROP: FENCE ---
         if (type.equals("Fence")) { drops.add(new DropResult("Fence", 1)); return drops; }
 
         int amount = destroyed ? ThreadLocalRandom.current().nextInt(3, 6) : 1;

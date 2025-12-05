@@ -34,6 +34,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         this.timeService = timeService;
     }
 
+    // --- GAME LOOP BROADCAST (50ms / 20 TPS) ---
     @Scheduled(fixedRate = 50)
     public void broadcastGameLoop() {
         if (activeSessions.isEmpty()) return;
@@ -45,7 +46,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                     try {
                         sendWorldUpdate(session, p);
                     } catch (IOException e) {
-                        // Ignore
+                        // Handle disconnects gracefully
                     }
                 }
             }
@@ -56,9 +57,9 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
         activeSessions.add(session);
         gameService.onPlayerConnect(session.getId());
-        sendInventoryUpdate(session, gameService.getPlayer(session.getId()));
 
-        // --- FIX: Send All Active Objects on Connect (Fixes disappearance bug) ---
+        // Send initial state
+        sendInventoryUpdate(session, gameService.getPlayer(session.getId()));
         sendAllActiveObjects(session);
     }
 
@@ -68,13 +69,12 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         gameService.onPlayerDisconnect(session.getId());
     }
 
-    // New Method to sync buildings
     private void sendAllActiveObjects(WebSocketSession session) throws IOException {
         Map<String, WorldObject> objects = gameService.getActiveObjects();
         if (objects.isEmpty()) return;
 
         ObjectNode msg = objectMapper.createObjectNode();
-        msg.put("event", "position_update"); // Reuse update handler or create new one
+        msg.put("event", "position_update");
         ArrayNode arr = msg.putArray("objects");
 
         for (WorldObject obj : objects.values()) {
@@ -84,7 +84,10 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             n.put("y", obj.y);
         }
 
-        session.sendMessage(new TextMessage(msg.toString()));
+        // FIX: Synchronize write
+        synchronized (session) {
+            session.sendMessage(new TextMessage(msg.toString()));
+        }
     }
 
     @Override
@@ -108,12 +111,37 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 PlayerState p = gameService.processRemoveItem(sessionId, itemType, amount);
                 sendInventoryUpdate(session, p);
             }
+            // --- PLAYER DROPPING ITEMS (Pressed X) ---
+            else if ("drop_item".equals(action)) {
+                String itemType = json.get("item").asText();
+                GameService.DropResult result = gameService.dropItem(sessionId, itemType);
+
+                if (result != null) {
+                    PlayerState p = gameService.getPlayer(sessionId);
+                    sendInventoryUpdate(session, p);
+
+                    // Broadcast visual drop to all players
+                    ObjectNode dropMsg = objectMapper.createObjectNode();
+                    dropMsg.put("event", "item_spawn");
+                    dropMsg.put("x", p.getX());
+                    dropMsg.put("y", p.getY());
+
+                    ArrayNode dropsNode = dropMsg.putArray("drops");
+                    ObjectNode dNode = dropsNode.addObject();
+                    dNode.put("type", result.type);
+                    dNode.put("amount", result.amount);
+
+                    TextMessage tm = new TextMessage(dropMsg.toString());
+                    broadcastToAll(tm);
+                }
+            }
             else if ("craft_item".equals(action)) {
                 String recipe = json.get("recipe").asText();
                 if (gameService.processCrafting(sessionId, recipe)) {
                     sendInventoryUpdate(session, gameService.getPlayer(sessionId));
                 }
             }
+            // --- PLACING BUILDINGS ---
             else if ("place_object".equals(action)) {
                 String type = json.get("type").asText();
                 int x = json.get("x").asInt();
@@ -125,39 +153,40 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                     msg.put("x", x);
                     msg.put("y", y);
 
-                    // Broadcast placement to ALL players so they see it instantly
                     TextMessage tm = new TextMessage(msg.toString());
-                    for(WebSocketSession s : activeSessions) {
-                        if(s.isOpen()) s.sendMessage(tm);
-                    }
+                    broadcastToAll(tm);
 
                     sendInventoryUpdate(session, gameService.getPlayer(sessionId));
                 }
             }
+            // --- PICKING UP BUILDINGS ---
             else if ("pickup_object".equals(action)) {
                 int x = json.get("x").asInt();
                 int y = json.get("y").asInt();
+
+                // 1. Peek at object
+                WorldObject obj = gameService.getActiveObjects().get(x + "_" + y);
+                String typeToDrop = (obj != null) ? obj.type : "Crafting Table";
+
+                // 2. Process removal
                 if (gameService.processPickupObject(sessionId, x, y)) {
                     ObjectNode msg = objectMapper.createObjectNode();
                     msg.put("event", "object_removed");
                     msg.put("x", x);
                     msg.put("y", y);
+
                     ArrayNode dropsNode = msg.putArray("drops");
                     ObjectNode dNode = dropsNode.addObject();
-                    // Determine drop type based on what was there?
-                    // For now assuming Crafting Table logic or generic
-                    // Ideally GameService should return the object type picked up
-                    dNode.put("type", "Crafting Table");
+                    dNode.put("type", typeToDrop);
                     dNode.put("amount", 1);
 
                     TextMessage tm = new TextMessage(msg.toString());
-                    for(WebSocketSession s : activeSessions) {
-                        if(s.isOpen()) s.sendMessage(tm);
-                    }
+                    broadcastToAll(tm);
 
                     sendInventoryUpdate(session, gameService.getPlayer(sessionId));
                 }
             }
+            // --- INTERACTION / COMBAT ---
             else if ("interact".equals(action)) {
                 int tx = json.get("x").asInt();
                 int ty = json.get("y").asInt();
@@ -192,15 +221,24 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                         dNode.put("amount", d.amount);
                     }
 
-                    // Broadcast interactions (chops, attacks) to all
                     TextMessage tm = new TextMessage(msg.toString());
-                    for(WebSocketSession s : activeSessions) {
-                        if(s.isOpen()) s.sendMessage(tm);
-                    }
+                    broadcastToAll(tm);
                 }
             }
         } catch (Exception e) {
-            System.err.println("Error: " + e.getMessage());
+            System.err.println("WS Error: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private void broadcastToAll(TextMessage message) throws IOException {
+        for(WebSocketSession s : activeSessions) {
+            if(s.isOpen()) {
+                // FIX: Synchronize write to prevent TEXT_PARTIAL_WRITING error
+                synchronized (s) {
+                    s.sendMessage(message);
+                }
+            }
         }
     }
 
@@ -227,7 +265,10 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             }
         }
 
-        session.sendMessage(new TextMessage(response.toString()));
+        // FIX: Synchronize write
+        synchronized (session) {
+            session.sendMessage(new TextMessage(response.toString()));
+        }
     }
 
     private void sendInventoryUpdate(WebSocketSession session, PlayerState p) throws IOException {
@@ -235,7 +276,11 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             ObjectNode invMsg = objectMapper.createObjectNode();
             invMsg.put("event", "inventory_update");
             invMsg.putPOJO("items", p.getInventory());
-            session.sendMessage(new TextMessage(invMsg.toString()));
+
+            // FIX: Synchronize write
+            synchronized (session) {
+                session.sendMessage(new TextMessage(invMsg.toString()));
+            }
         }
     }
 }
