@@ -23,22 +23,13 @@ public class GameService {
     private final PersistenceService persistenceService;
 
     private final int TILE_SIZE = 64;
-
-    // [FIX 1] Reduced Collision Radius to be more forgiving than Client
-    // This prevents "grazing" collisions from causing rubber-banding
-    private final double PLAYER_RADIUS = 10.0;
-
+    private final double PLAYER_RADIUS = 5.0;
     private final int MAX_MONSTERS = 5;
-
-    // AI Config
-    // [FIX 2] Logic updated: Start Dist is irrelevant for passive mobs,
-    // but Stop Dist is used to give up chase.
-    private final double CHASE_STOP_DIST = 10 * 64.0; // Give up if player runs far
+    private final double CHASE_STOP_DIST = 10 * 64.0;
     private final double ATTACK_RANGE = 64.0;
     private final long ATTACK_COOLDOWN = 1500;
 
     public static final int MAP_RADIUS = 100;
-
     private final int SNOW_LIMIT = -30;
     private final int SAND_LIMIT = 30;
 
@@ -46,7 +37,6 @@ public class GameService {
         this.persistenceService = persistenceService;
     }
 
-    // --- LIFECYCLE ---
     @PostConstruct
     public void init() {
         PersistenceService.SaveData data = persistenceService.loadData();
@@ -68,7 +58,6 @@ public class GameService {
         persistenceService.saveData(activeObjects, playerStates);
     }
 
-    // --- DETERMINISTIC GENERATION (Matches Godot 64-bit Hash) ---
     private double getHashNoise(int x, int y) {
         long seed = 12345;
         long n = (long)x * 331 + (long)y * 433 + seed;
@@ -118,7 +107,6 @@ public class GameService {
         activeObjects.put(key, new WorldObject(type, x, y));
     }
 
-    // --- GAME LOOP ---
     @Scheduled(fixedRate = 50)
     public void gameLoop() {
         long now = System.currentTimeMillis();
@@ -150,14 +138,10 @@ public class GameService {
         }
     }
 
-    // --- AI LOGIC (Passive until Attacked) ---
     private void updateMonsterAI(Monster m, long now) {
         PlayerState target = null;
-
-        // 1. Only get target if we ALREADY have an ID (set via being hit)
         if (m.targetPlayerId != null) {
             target = playerStates.get(m.targetPlayerId);
-            // If player disconnected, stop chasing
             if (target == null) {
                 m.targetPlayerId = null;
                 m.isRetreating = false;
@@ -165,14 +149,8 @@ public class GameService {
             }
         }
 
-        // [FIX 2] REMOVED the "Auto-Scan" loop here.
-        // Slimes will no longer look for players to attack.
-        // They only react if 'target' was set above (i.e., they were hurt).
-
         if (target != null) {
             double dist = getDistance(m.x, m.y, target.getX(), target.getY());
-
-            // Give up if too far
             if (dist > CHASE_STOP_DIST) {
                 m.targetPlayerId = null;
                 m.isRetreating = false;
@@ -180,7 +158,6 @@ public class GameService {
                 return;
             }
 
-            // Retreat Logic (Low HP)
             if (m.hp <= 3 && !m.isRetreating && m.hp > 0 && ThreadLocalRandom.current().nextDouble() < 0.02) {
                 m.isRetreating = true;
                 m.stateTimer = now + 3000;
@@ -205,7 +182,6 @@ public class GameService {
             }
         }
         else {
-            // No Target -> Wander Peacefully
             handlePassiveBehavior(m, now);
         }
     }
@@ -219,7 +195,7 @@ public class GameService {
                 m.state = Monster.State.WANDER;
                 m.stateTimer = now + ThreadLocalRandom.current().nextLong(1000, 3000);
                 double wanderAngle = ThreadLocalRandom.current().nextDouble(0, Math.PI * 2);
-                m.dx = Math.cos(wanderAngle) * (m.speed * 0.5); // Slower wander speed
+                m.dx = Math.cos(wanderAngle) * (m.speed * 0.5);
                 m.dy = Math.sin(wanderAngle) * (m.speed * 0.5);
             }
         }
@@ -230,7 +206,6 @@ public class GameService {
                 m.x = (int)nextX;
                 m.y = (int)nextY;
             } else {
-                // Hit a wall while wandering -> Stop and wait
                 m.state = Monster.State.IDLE;
                 m.stateTimer = now + 1000;
             }
@@ -257,20 +232,16 @@ public class GameService {
         }
     }
 
-    // --- PLAYER MOVEMENT: SLIDING + FORGIVING RADIUS ---
     public PlayerState processMove(String sessionId, double requestedX, double requestedY, long seqId) {
         PlayerState player = playerStates.get(sessionId);
         if (player != null) {
-            // 1. Try full move
             if (isValidPosition(requestedX, requestedY) && !isPlayerBlocked(requestedX, requestedY)) {
                 player.setX(requestedX);
                 player.setY(requestedY);
             }
-            // 2. Slide X
             else if (isValidPosition(requestedX, player.getY()) && !isPlayerBlocked(requestedX, player.getY())) {
                 player.setX(requestedX);
             }
-            // 3. Slide Y
             else if (isValidPosition(player.getX(), requestedY) && !isPlayerBlocked(player.getX(), requestedY)) {
                 player.setY(requestedY);
             }
@@ -279,7 +250,6 @@ public class GameService {
         return player;
     }
 
-    // --- INTERACTION: AGGRO ON HIT ---
     public WorldObject processInteraction(String sessionId, int targetX, int targetY) {
         PlayerState player = playerStates.get(sessionId);
         if (player == null) return null;
@@ -289,12 +259,10 @@ public class GameService {
         double hitCenterX = (targetX * TILE_SIZE) + (TILE_SIZE / 2.0);
         double hitCenterY = (targetY * TILE_SIZE) + (TILE_SIZE / 2.0);
 
-        // A. Check Monsters
         for (Monster m : activeMonsters.values()) {
             boolean hit = getDistance(hitCenterX, hitCenterY, m.x, m.y) < 64;
             if (hit) {
                 m.hp--;
-                // [FIX 2] Set Aggro here!
                 m.targetPlayerId = sessionId;
                 m.state = Monster.State.HURT;
                 m.stateTimer = System.currentTimeMillis() + 400;
@@ -304,17 +272,15 @@ public class GameService {
                 double knY = m.y + Math.sin(angle) * 15.0;
                 if(!isBlocked(knX, knY)) { m.x = (int)knX; m.y = (int)knY; }
 
-                // [FIX 3] Death Logic
                 if (m.hp <= 0) {
                     activeMonsters.remove(m.id);
                     System.out.println("Monster Died: " + m.id);
-                    return m; // Returning m allows Handler to send death packet
+                    return m;
                 }
                 return m;
             }
         }
 
-        // B. Check Objects (Fuzzy)
         String directKey = targetX + "_" + targetY;
         WorldObject targetObj = activeObjects.get(directKey);
 
@@ -350,7 +316,6 @@ public class GameService {
         return getTerrainAt(tx, ty) != -1;
     }
 
-    // Use reduced radius for more forgiving movement
     private boolean isPlayerBlocked(double x, double y) {
         if (isBlocked(x, y)) return true;
         if (isBlocked(x + PLAYER_RADIUS, y)) return true;
@@ -402,9 +367,11 @@ public class GameService {
         if (player != null) player.removeItem(itemType, amount);
         return player;
     }
+
     public boolean processCrafting(String sessionId, String recipe) {
         PlayerState player = playerStates.get(sessionId);
         if (player == null) return false;
+
         if (recipe.equals("Pickaxe")) {
             if (player.hasItem("Wood", 3) && player.hasItem("Stone", 2) && player.hasItem("Rope", 1)) {
                 player.removeItem("Wood", 3); player.removeItem("Stone", 2); player.removeItem("Rope", 1);
@@ -417,8 +384,17 @@ public class GameService {
                 player.addItem("Bonfire", 1); return true;
             }
         }
+        // --- NEW RECIPE: FENCE ---
+        else if (recipe.equals("Fence")) {
+            if (player.hasItem("Wood", 2)) {
+                player.removeItem("Wood", 2);
+                player.addItem("Fence", 1);
+                return true;
+            }
+        }
         return false;
     }
+
     public boolean processPlaceObject(String sessionId, String type, int x, int y) {
         PlayerState player = playerStates.get(sessionId);
         if (player == null || !player.hasItem(type, 1)) return false;
@@ -430,11 +406,13 @@ public class GameService {
         player.removeItem(type, 1);
         return true;
     }
+
     public boolean processPickupObject(String sessionId, int x, int y) {
         String objKey = x + "_" + y;
         WorldObject obj = activeObjects.get(objKey);
         if (obj != null) {
-            if (obj.type.equals("Crafting Table") || obj.type.equals("Bonfire")) {
+            // Updated to include Fence
+            if (obj.type.equals("Crafting Table") || obj.type.equals("Bonfire") || obj.type.equals("Fence")) {
                 activeObjects.remove(objKey); destroyedObjectIds.add(objKey); return true;
             }
         }
@@ -446,6 +424,9 @@ public class GameService {
         if (type.equals("Slime")) { drops.add(new DropResult("Rope", 1)); return drops; }
         if (type.equals("Crafting Table")) { drops.add(new DropResult("Crafting Table", 1)); return drops; }
         if (type.equals("Bonfire")) { drops.add(new DropResult("Bonfire", 1)); return drops; }
+
+        // --- NEW DROP: FENCE ---
+        if (type.equals("Fence")) { drops.add(new DropResult("Fence", 1)); return drops; }
 
         int amount = destroyed ? ThreadLocalRandom.current().nextInt(3, 6) : 1;
         if (type.equals("Tree") || type.equals("Snow Tree") || type.equals("Palm Tree")) drops.add(new DropResult("Wood", amount));
