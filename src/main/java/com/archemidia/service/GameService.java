@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ThreadLocalRandom;
 
 @Service
@@ -19,6 +20,9 @@ public class GameService {
     private final Map<String, WorldObject> activeObjects = new ConcurrentHashMap<>();
     private final Map<String, Monster> activeMonsters = new ConcurrentHashMap<>();
     private final List<String> destroyedObjectIds = new ArrayList<>();
+
+    // [NEW] Queue to store players loaded from disk until they "reconnect"
+    private final Queue<PlayerState> offlinePlayers = new ConcurrentLinkedQueue<>();
 
     private final PersistenceService persistenceService;
 
@@ -38,6 +42,8 @@ public class GameService {
     private final int SNOW_LIMIT = -30;
     private final int SAND_LIMIT = 30;
 
+
+
     public GameService(PersistenceService persistenceService) {
         this.persistenceService = persistenceService;
     }
@@ -48,20 +54,42 @@ public class GameService {
         if (data != null) {
             if (data.objects != null) this.activeObjects.putAll(data.objects);
             if (data.monsters != null) this.activeMonsters.putAll(data.monsters);
-            System.out.println(" [GameService] Loaded " + activeObjects.size() + " objects and " + activeMonsters.size() + " monsters.");
-        } else {
+
+            // [FIX] Load saved players into offline queue
+            if (data.players != null) {
+                this.offlinePlayers.addAll(data.players.values());
+            }
+
+            System.out.println(" [GameService] Loaded " + activeObjects.size() + " objects, " + activeMonsters.size() + " monsters, " + offlinePlayers.size() + " saved players.");
+        }
+
+        if (activeObjects.isEmpty()) {
+            System.out.println(" [GameService] World is empty. Generating new terrain...");
             initializeFixedMap();
         }
     }
 
     @PreDestroy
     public void cleanup() {
-        persistenceService.saveData(activeObjects, playerStates, activeMonsters);
+        // Save BOTH active and offline players
+        persistenceService.saveData(activeObjects, collectAllPlayersForSave(), activeMonsters);
     }
 
     @Scheduled(fixedRate = 30000)
     public void autoSave() {
-        persistenceService.saveData(activeObjects, playerStates, activeMonsters);
+        // Save BOTH active and offline players
+        persistenceService.saveData(activeObjects, collectAllPlayersForSave(), activeMonsters);
+    }
+
+    // --- NEW HELPER: Merge Active & Offline for Saving ---
+    private Map<String, PlayerState> collectAllPlayersForSave() {
+        Map<String, PlayerState> all = new HashMap<>(playerStates);
+        for (PlayerState p : offlinePlayers) {
+            // Use the stored ID as key. If a player reconnected, they are in playerStates (which takes precedence)
+            // If they are still offline, they get saved here.
+            all.putIfAbsent(p.getPlayerId(), p);
+        }
+        return all;
     }
 
     private double getHashNoise(int x, int y) {
@@ -470,14 +498,50 @@ public class GameService {
     public Map<String, Monster> getActiveMonsters() { return activeMonsters; }
     public Map<String, WorldObject> getActiveObjects() { return activeObjects; }
 
+    // --- CHANGED: Player Connection & Ownership Transfer ---
     public PlayerState onPlayerConnect(String sessionId) {
-        PlayerState newState = new PlayerState(sessionId, 0, 0);
-        newState.addItem("Crafting Table", 1);
-        playerStates.put(sessionId, newState);
-        return newState;
+        PlayerState state;
+
+        if (!offlinePlayers.isEmpty()) {
+            state = offlinePlayers.poll();
+            String oldId = state.getPlayerId();
+
+            // Update ID to new session
+            state.setPlayerId(sessionId);
+
+            // [FIX] Transfer ownership of existing buildings to new ID
+            // This ensures "One Table Per Player" check works after restart
+            for (WorldObject obj : activeObjects.values()) {
+                if (obj.ownerId != null && obj.ownerId.equals(oldId)) {
+                    obj.ownerId = sessionId;
+                }
+            }
+
+            System.out.println(" [GameService] Restored player " + oldId + " -> " + sessionId);
+        }
+        else {
+            state = new PlayerState(sessionId, 0, 0);
+            // Only give starter table if they don't already have one placed (rare for new ID, but safe)
+            boolean ownsTable = activeObjects.values().stream()
+                    .anyMatch(o -> "Crafting Table".equals(o.type) && sessionId.equals(o.ownerId));
+
+            if (!ownsTable) {
+                state.addItem("Crafting Table", 1);
+            }
+        }
+
+        playerStates.put(sessionId, state);
+        return state;
     }
 
-    public void onPlayerDisconnect(String sessionId) { playerStates.remove(sessionId); }
+    // --- FIX: Don't delete data on disconnect, move to offline ---
+    public void onPlayerDisconnect(String sessionId) {
+        PlayerState state = playerStates.remove(sessionId);
+        if (state != null) {
+            offlinePlayers.add(state);
+            System.out.println(" [GameService] Player " + sessionId + " stored in offline queue.");
+        }
+    }
     public PlayerState getPlayer(String sessionId) { return playerStates.get(sessionId); }
 
     public PlayerState processPickup(String sessionId, String itemType) {
@@ -558,15 +622,28 @@ public class GameService {
         return false;
     }
 
+    // --- CHANGED: Placement Logic with Limit Check ---
     public boolean processPlaceObject(String sessionId, String type, int x, int y) {
         PlayerState player = playerStates.get(sessionId);
         if (player == null || !player.hasItem(type, 1)) return false;
         if (getTerrainAt(x, y) == -1) return false;
         String objKey = x + "_" + y;
         if (activeObjects.containsKey(objKey)) return false;
-        WorldObject obj = new WorldObject(type, x, y);
 
-        // --- FIX: Assign HP to Buildings ---
+        // [FIX] Check if player already owns a Crafting Table
+        if (type.equals("Crafting Table")) {
+            boolean alreadyOwnsTable = activeObjects.values().stream()
+                    .anyMatch(o -> "Crafting Table".equals(o.type) && sessionId.equals(o.ownerId));
+
+            if (alreadyOwnsTable) {
+                System.out.println(" [GameService] Player " + sessionId + " tried to place a second table. Denied.");
+                return false;
+            }
+        }
+
+        WorldObject obj = new WorldObject(type, x, y);
+        obj.ownerId = sessionId; // Assign Owner
+
         if (type.equals("Crafting Table") || type.equals("Bonfire")) obj.hp = 3;
         if (type.equals("Fence")) obj.hp = 2;
 

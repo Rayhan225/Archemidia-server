@@ -23,7 +23,6 @@ public class PersistenceService {
     private final String TEMP_FILE = "world_data.tmp";
 
     public PersistenceService() {
-        // Prevent crashing if save file schema changes slightly
         mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
     }
 
@@ -34,15 +33,14 @@ public class PersistenceService {
             data.players = players;
             data.monsters = monsters;
 
-            // 1. Write to a temporary file first (Atomic Write pattern)
+            // Atomic Write: Save to temp, then rename
             File tempFile = new File(TEMP_FILE);
             mapper.writeValue(tempFile, data);
 
-            // 2. If write succeeded, replace the real file
             File realFile = new File(DATA_FILE);
             Files.move(tempFile.toPath(), realFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
 
-            System.out.println(" [Persistence] World saved safely (" + objects.size() + " objects, " + players.size() + " players).");
+            System.out.println(" [Persistence] World saved (" + objects.size() + " objects, " + players.size() + " players).");
         } catch (IOException e) {
             System.err.println(" [Persistence] Failed to save world: " + e.getMessage());
         }
@@ -55,15 +53,10 @@ public class PersistenceService {
         try {
             return mapper.readValue(f, new TypeReference<SaveData>() {});
         } catch (IOException e) {
-            System.err.println(" [Persistence] Save file is corrupted: " + e.getMessage());
-
-            // Auto-fix: Rename corrupted file so the server can start fresh
-            File backup = new File(DATA_FILE + ".corrupted_" + System.currentTimeMillis());
-            if (f.renameTo(backup)) {
-                System.out.println(" [Persistence] Renamed corrupted file to: " + backup.getName());
-                System.out.println(" [Persistence] Generating new world...");
-            }
-            return null; // Return null triggers fresh world gen in GameService
+            System.err.println(" [Persistence] Corrupted save detected. Starting fresh.");
+            // Rename corrupted file backup
+            f.renameTo(new File(DATA_FILE + ".bak_" + System.currentTimeMillis()));
+            return null;
         }
     }
 

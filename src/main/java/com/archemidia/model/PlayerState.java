@@ -16,7 +16,7 @@ public class PlayerState {
     // --- INTERACTION & COMBAT STATE ---
     private boolean isAttacking = false;
     private long lastInteractionTime = 0;
-    private static final long INTERACTION_COOLDOWN = 500; // 0.5s cooldown for basic interactions
+    private static final long INTERACTION_COOLDOWN = 500;
 
     // Juice & Feedback States
     private boolean isKnockedBack = false;
@@ -24,22 +24,31 @@ public class PlayerState {
     private boolean isInvulnerable = false;
     private long invulnerabilityEndTime = 0;
 
-    // Direction for Isometric Logic (0=Down, 1=Up, 2=Left, 3=Right)
-    // Important for directional splatter/attack visual feedback
     private int facingDirection = 0;
 
     private Map<String, Integer> inventory = new HashMap<>();
+
+    // --- REQUIRED: No-Arg Constructor for JSON ---
+    public PlayerState() {
+        this.maxHp = 100;
+        this.hp = this.maxHp;
+    }
 
     public PlayerState(String playerId, double x, double y) {
         this.playerId = playerId;
         this.x = x;
         this.y = y;
-        // Default stats
-        this.maxHp = 100; // Assuming 50 HP per heart x 2 ?? or just 100 raw
+        this.maxHp = 100;
         this.hp = this.maxHp;
     }
 
+    // --- INVENTORY MANAGEMENT ---
     public Map<String, Integer> getInventory() { return inventory; }
+
+    // [FIX] Required for JSON Deserialization to restore items
+    public void setInventory(Map<String, Integer> inventory) {
+        this.inventory = inventory;
+    }
 
     public void addItem(String itemName, int amount) {
         int current = inventory.getOrDefault(itemName, 0);
@@ -62,15 +71,14 @@ public class PlayerState {
         return inventory.getOrDefault(itemName, 0) >= amount;
     }
 
-    // --- HP Logic with I-Frames ---
+    // --- HP Logic ---
     public void damage(int amount) {
-        if (isInvulnerable()) return; // I-Frame check
+        if (isInvulnerable()) return;
 
         this.hp -= amount;
         if (this.hp < 0) this.hp = 0;
 
-        // Trigger I-Frames on damage
-        triggerInvulnerability(1000); // 1 second I-frames
+        triggerInvulnerability(1000);
     }
 
     public void heal(int amount) {
@@ -81,10 +89,13 @@ public class PlayerState {
     public int getHp() { return hp; }
     public int getMaxHp() { return maxHp; }
 
+    // [FIX] Setters for JSON Deserialization
+    public void setHp(int hp) { this.hp = hp; }
+    public void setMaxHp(int maxHp) { this.maxHp = maxHp; }
+
     // --- Interaction Logic ---
     public boolean canInteract() {
         long currentTime = System.currentTimeMillis();
-        // Cannot interact if knocked back (Stun state)
         if (isKnockedBack()) return false;
 
         if (currentTime - lastInteractionTime >= INTERACTION_COOLDOWN) {
@@ -138,9 +149,12 @@ public class PlayerState {
 
     // Getters & Setters
     public String getPlayerId() { return playerId; }
+    public void setPlayerId(String playerId) { this.playerId = playerId; }
+
     public double getX() { return x; }
     public double getY() { return y; }
     public long getLastProcessedSeqId() { return lastProcessedSeqId; }
+
     public void setX(double x) { this.x = x; }
     public void setY(double y) { this.y = y; }
     public void setLastProcessedSeqId(long seqId) { this.lastProcessedSeqId = seqId; }
