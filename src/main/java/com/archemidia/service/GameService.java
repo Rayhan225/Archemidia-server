@@ -3,6 +3,7 @@ package com.archemidia.service;
 import com.archemidia.model.Monster;
 import com.archemidia.model.PlayerState;
 import com.archemidia.model.WorldObject;
+import com.archemidia.model.item.Item;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -20,19 +21,16 @@ public class GameService {
     private final Map<String, WorldObject> activeObjects = new ConcurrentHashMap<>();
     private final Map<String, Monster> activeMonsters = new ConcurrentHashMap<>();
     private final List<String> destroyedObjectIds = new ArrayList<>();
-
-    // [NEW] Queue to store players loaded from disk until they "reconnect"
     private final Queue<PlayerState> offlinePlayers = new ConcurrentLinkedQueue<>();
 
     private final PersistenceService persistenceService;
+    private final ItemRegistry itemRegistry; // [NEW]
 
     private final int TILE_SIZE = 64;
     private final double PLAYER_RADIUS = 5.0;
     private final int MAX_MONSTERS = 10;
-
     private final double CHASE_STOP_DIST = 10 * 64.0;
     private final double ATTACK_RANGE = 30.0;
-
     private final long ATTACK_COOLDOWN = 1000;
     private final long DASH_COOLDOWN = 3000;
     private final long JUMP_COOLDOWN = 4000;
@@ -42,10 +40,10 @@ public class GameService {
     private final int SNOW_LIMIT = -30;
     private final int SAND_LIMIT = 30;
 
-
-
-    public GameService(PersistenceService persistenceService) {
+    // [UPDATED Constructor]
+    public GameService(PersistenceService persistenceService, ItemRegistry itemRegistry) {
         this.persistenceService = persistenceService;
+        this.itemRegistry = itemRegistry;
     }
 
     @PostConstruct
@@ -54,12 +52,9 @@ public class GameService {
         if (data != null) {
             if (data.objects != null) this.activeObjects.putAll(data.objects);
             if (data.monsters != null) this.activeMonsters.putAll(data.monsters);
-
-            // [FIX] Load saved players into offline queue
             if (data.players != null) {
                 this.offlinePlayers.addAll(data.players.values());
             }
-
             System.out.println(" [GameService] Loaded " + activeObjects.size() + " objects, " + activeMonsters.size() + " monsters, " + offlinePlayers.size() + " saved players.");
         }
 
@@ -71,22 +66,17 @@ public class GameService {
 
     @PreDestroy
     public void cleanup() {
-        // Save BOTH active and offline players
         persistenceService.saveData(activeObjects, collectAllPlayersForSave(), activeMonsters);
     }
 
     @Scheduled(fixedRate = 30000)
     public void autoSave() {
-        // Save BOTH active and offline players
         persistenceService.saveData(activeObjects, collectAllPlayersForSave(), activeMonsters);
     }
 
-    // --- NEW HELPER: Merge Active & Offline for Saving ---
     private Map<String, PlayerState> collectAllPlayersForSave() {
         Map<String, PlayerState> all = new HashMap<>(playerStates);
         for (PlayerState p : offlinePlayers) {
-            // Use the stored ID as key. If a player reconnected, they are in playerStates (which takes precedence)
-            // If they are still offline, they get saved here.
             all.putIfAbsent(p.getPlayerId(), p);
         }
         return all;
@@ -162,21 +152,16 @@ public class GameService {
 
         int spawnRadius = 25;
         int minSpawnDist = 10;
-
         int px = (int) (randomPlayer.getX() / TILE_SIZE);
         int py = (int) (randomPlayer.getY() / TILE_SIZE);
 
         for(int i=0; i<5; i++) {
             int offsetX = ThreadLocalRandom.current().nextInt(-spawnRadius, spawnRadius);
             int offsetY = ThreadLocalRandom.current().nextInt(-spawnRadius, spawnRadius);
-
             if (Math.abs(offsetX) < minSpawnDist && Math.abs(offsetY) < minSpawnDist) continue;
-
             int tx = px + offsetX;
             int ty = py + offsetY;
-
             if (getTerrainAt(tx, ty) != 0) continue;
-
             if (tx * tx + ty * ty > MAP_RADIUS * MAP_RADIUS) continue;
 
             double worldX = tx * TILE_SIZE + (TILE_SIZE / 2.0);
@@ -205,7 +190,6 @@ public class GameService {
         if (target != null) {
             double dist = getDistance(m.x, m.y, target.getX(), target.getY());
 
-            // --- JUMP ATTACK ---
             if (m.state == Monster.State.JUMP) {
                 if (now > m.stateTimer) {
                     if (dist < 50.0) {
@@ -220,7 +204,6 @@ public class GameService {
                 return;
             }
 
-            // --- DASH ATTACK ---
             if (m.state == Monster.State.DASH) {
                 if (now > m.stateTimer) {
                     m.state = Monster.State.CHASE;
@@ -236,7 +219,6 @@ public class GameService {
                 }
             }
 
-            // --- EVADE ---
             if (m.state == Monster.State.EVADE) {
                 if (now > m.stateTimer) {
                     m.state = Monster.State.CHASE;
@@ -246,7 +228,6 @@ public class GameService {
                 return;
             }
 
-            // --- DECISION MAKING ---
             if (target.isAttacking() && dist < 120 && now - m.lastEvadeTime > EVADE_COOLDOWN) {
                 if (ThreadLocalRandom.current().nextDouble() < 0.60) {
                     m.state = Monster.State.EVADE;
@@ -274,7 +255,6 @@ public class GameService {
                 }
             }
 
-            // --- STANDARD BEHAVIOR ---
             if (dist > CHASE_STOP_DIST) {
                 m.targetPlayerId = null;
                 m.isAggravated = (m.personality == Monster.Personality.AGGRESSIVE);
@@ -318,10 +298,6 @@ public class GameService {
         }
     }
 
-    private void moveMonsterSmart(Monster m, double angle) {
-        moveMonsterSmart(m, angle, m.speed);
-    }
-
     private void handlePassiveBehavior(Monster m, long now) {
         if (now > m.stateTimer) {
             if (m.state == Monster.State.WANDER) {
@@ -354,10 +330,9 @@ public class GameService {
         double playerX = player.getX();
         double playerY = player.getY();
 
-        // --- DAMAGE CALCULATION ---
         int damage = 1;
         if (player.hasItem("Pickaxe", 1)) {
-            damage = 2; // REDUCED FROM 3 TO 2
+            damage = 2;
         }
 
         double hitCenterX = (targetX * TILE_SIZE) + (TILE_SIZE / 2.0);
@@ -365,7 +340,6 @@ public class GameService {
 
         Monster closestMonster = null;
         double minMonDist = 64.0;
-
         for (Monster m : activeMonsters.values()) {
             double d = getDistance(hitCenterX, hitCenterY, m.x, m.y);
             if (d < minMonDist) {
@@ -399,7 +373,7 @@ public class GameService {
         }
 
         if (targetObj != null) {
-            targetObj.hp -= damage; // Apply Damage
+            targetObj.hp -= damage;
             if (targetObj.hp <= 0) {
                 destroyedObjectIds.add(directKey);
                 activeObjects.remove(directKey);
@@ -411,7 +385,7 @@ public class GameService {
     private void handleMonsterHit(Monster m, String sessionId, double attackerX, double attackerY, int damage) {
         m.isAggravated = true;
         m.targetPlayerId = sessionId;
-        m.hp -= damage; // Apply Damage
+        m.hp -= damage;
         m.state = Monster.State.HURT;
         m.stateTimer = System.currentTimeMillis() + 400;
 
@@ -434,15 +408,12 @@ public class GameService {
                 break;
             }
         }
-
         if(!isBlocked(knX, knY)) { m.x = (int)knX; m.y = (int)knY; }
-
         if (m.hp <= 0) {
             activeMonsters.remove(m.id);
         }
     }
 
-    // --- MOVEMENT ---
     public PlayerState processMove(String sessionId, double requestedX, double requestedY, long seqId) {
         PlayerState player = playerStates.get(sessionId);
         if (player != null) {
@@ -498,43 +469,35 @@ public class GameService {
     public Map<String, Monster> getActiveMonsters() { return activeMonsters; }
     public Map<String, WorldObject> getActiveObjects() { return activeObjects; }
 
-    // --- CHANGED: Player Connection & Ownership Transfer ---
     public PlayerState onPlayerConnect(String sessionId) {
         PlayerState state;
 
         if (!offlinePlayers.isEmpty()) {
             state = offlinePlayers.poll();
             String oldId = state.getPlayerId();
-
-            // Update ID to new session
             state.setPlayerId(sessionId);
-
-            // [FIX] Transfer ownership of existing buildings to new ID
-            // This ensures "One Table Per Player" check works after restart
             for (WorldObject obj : activeObjects.values()) {
                 if (obj.ownerId != null && obj.ownerId.equals(oldId)) {
                     obj.ownerId = sessionId;
                 }
             }
-
             System.out.println(" [GameService] Restored player " + oldId + " -> " + sessionId);
         }
         else {
             state = new PlayerState(sessionId, 0, 0);
-            // Only give starter table if they don't already have one placed (rare for new ID, but safe)
             boolean ownsTable = activeObjects.values().stream()
                     .anyMatch(o -> "Crafting Table".equals(o.type) && sessionId.equals(o.ownerId));
 
             if (!ownsTable) {
-                state.addItem("Crafting Table", 1);
+                // [UPDATED] Use ItemRegistry
+                Item table = itemRegistry.getItem("Crafting Table");
+                if (table != null) state.addItem(table, 1);
             }
         }
-
         playerStates.put(sessionId, state);
         return state;
     }
 
-    // --- FIX: Don't delete data on disconnect, move to offline ---
     public void onPlayerDisconnect(String sessionId) {
         PlayerState state = playerStates.remove(sessionId);
         if (state != null) {
@@ -544,24 +507,13 @@ public class GameService {
     }
     public PlayerState getPlayer(String sessionId) { return playerStates.get(sessionId); }
 
+    // [UPDATED]
     public PlayerState processPickup(String sessionId, String itemType) {
         PlayerState player = playerStates.get(sessionId);
         if (player != null) {
-            int current = player.getInventory().getOrDefault(itemType, 0);
-            int max = 99;
-
-            if (itemType.equals("Pickaxe") || itemType.contains("Tool") || itemType.contains("Weapon")) {
-                max = 9;
-            } else if (itemType.equals("Crafting Table")) {
-                max = 1;
-            } else if (itemType.equals("Bonfire")) {
-                max = 10;
-            } else if (itemType.equals("Fence")) {
-                max = 100;
-            }
-
-            if (current < max) {
-                player.addItem(itemType, 1);
+            Item item = itemRegistry.getItem(itemType);
+            if (item != null) {
+                player.addItem(item, 1);
             }
         }
         return player;
@@ -584,45 +536,51 @@ public class GameService {
         return null;
     }
 
+    // [UPDATED]
     public boolean processCrafting(String sessionId, String recipe) {
         PlayerState player = playerStates.get(sessionId);
         if (player == null) return false;
 
         if (recipe.equals("Pickaxe")) {
             if (player.hasItem("Wood", 3) && player.hasItem("Stone", 2) && player.hasItem("Rope", 1)) {
-                int current = player.getInventory().getOrDefault("Pickaxe", 0);
-                if (current >= 9) return false;
+                if (player.hasItem("Pickaxe", 1)) return false; // Prevent duplicates for tools
 
                 player.removeItem("Wood", 3);
                 player.removeItem("Stone", 2);
                 player.removeItem("Rope", 1);
-                player.addItem("Pickaxe", 1);
+
+                Item item = itemRegistry.getItem("Pickaxe");
+                player.addItem(item, 1);
                 return true;
             }
         }
         else if (recipe.equals("Bonfire")) {
             if (player.hasItem("Wood", 10) && player.hasItem("Stone", 5)) {
-                int current = player.getInventory().getOrDefault("Bonfire", 0);
-                if (current >= 10) return false;
+                if (player.hasItem("Bonfire", 10)) return false;
 
-                player.removeItem("Wood", 10); player.removeItem("Stone", 5);
-                player.addItem("Bonfire", 1); return true;
+                player.removeItem("Wood", 10);
+                player.removeItem("Stone", 5);
+
+                Item item = itemRegistry.getItem("Bonfire");
+                player.addItem(item, 1);
+                return true;
             }
         }
         else if (recipe.equals("Fence")) {
             if (player.hasItem("Wood", 2)) {
-                int current = player.getInventory().getOrDefault("Fence", 0);
-                if (current >= 100) return false;
+                if (player.hasItem("Fence", 100)) return false;
 
                 player.removeItem("Wood", 2);
-                player.addItem("Fence", 1);
+
+                Item item = itemRegistry.getItem("Fence");
+                player.addItem(item, 1);
                 return true;
             }
         }
         return false;
     }
 
-    // --- CHANGED: Placement Logic with Limit Check ---
+    // [UPDATED]
     public boolean processPlaceObject(String sessionId, String type, int x, int y) {
         PlayerState player = playerStates.get(sessionId);
         if (player == null || !player.hasItem(type, 1)) return false;
@@ -630,19 +588,17 @@ public class GameService {
         String objKey = x + "_" + y;
         if (activeObjects.containsKey(objKey)) return false;
 
-        // [FIX] Check if player already owns a Crafting Table
         if (type.equals("Crafting Table")) {
             boolean alreadyOwnsTable = activeObjects.values().stream()
                     .anyMatch(o -> "Crafting Table".equals(o.type) && sessionId.equals(o.ownerId));
 
             if (alreadyOwnsTable) {
-                System.out.println(" [GameService] Player " + sessionId + " tried to place a second table. Denied.");
                 return false;
             }
         }
 
         WorldObject obj = new WorldObject(type, x, y);
-        obj.ownerId = sessionId; // Assign Owner
+        obj.ownerId = sessionId;
 
         if (type.equals("Crafting Table") || type.equals("Bonfire")) obj.hp = 3;
         if (type.equals("Fence")) obj.hp = 2;

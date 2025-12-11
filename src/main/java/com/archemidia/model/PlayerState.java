@@ -1,7 +1,12 @@
 package com.archemidia.model;
 
-import java.util.HashMap;
+import com.archemidia.model.item.Item;
+import com.archemidia.model.item.ItemStack;
+
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 public class PlayerState {
     private String playerId;
@@ -26,9 +31,9 @@ public class PlayerState {
 
     private int facingDirection = 0;
 
-    private Map<String, Integer> inventory = new HashMap<>();
+    // [CHANGED] Map -> List<ItemStack>
+    private List<ItemStack> inventory = new ArrayList<>();
 
-    // --- REQUIRED: No-Arg Constructor for JSON ---
     public PlayerState() {
         this.maxHp = 100;
         this.hp = this.maxHp;
@@ -42,33 +47,57 @@ public class PlayerState {
         this.hp = this.maxHp;
     }
 
-    // --- INVENTORY MANAGEMENT ---
-    public Map<String, Integer> getInventory() { return inventory; }
+    // --- NEW INVENTORY MANAGEMENT ---
 
-    // [FIX] Required for JSON Deserialization to restore items
-    public void setInventory(Map<String, Integer> inventory) {
-        this.inventory = inventory;
+    // For Internal Logic
+    public List<ItemStack> getInventory() { return inventory; }
+    public void setInventory(List<ItemStack> inventory) { this.inventory = inventory; }
+
+    // For Client Compatibility (converts back to simple Map)
+    public Map<String, Integer> getInventoryAsMap() {
+        return inventory.stream()
+                .collect(Collectors.toMap(
+                        stack -> stack.getItem().getId(),
+                        ItemStack::getCount
+                ));
     }
 
-    public void addItem(String itemName, int amount) {
-        int current = inventory.getOrDefault(itemName, 0);
-        inventory.put(itemName, current + amount);
-    }
-
-    public void removeItem(String itemName, int amount) {
-        if (inventory.containsKey(itemName)) {
-            int current = inventory.get(itemName);
-            int newVal = current - amount;
-            if (newVal <= 0) {
-                inventory.remove(itemName);
-            } else {
-                inventory.put(itemName, newVal);
+    public void addItem(Item item, int amount) {
+        // 1. Try to stack with existing
+        for (ItemStack stack : inventory) {
+            if (stack.getItem().getId().equals(item.getId())) {
+                // Future: Check stack.getItem().getMaxStack()
+                stack.add(amount);
+                return;
             }
+        }
+        // 2. Else add new slot
+        inventory.add(new ItemStack(item, amount));
+    }
+
+    public void removeItem(String itemId, int amount) {
+        ItemStack toRemove = null;
+        for (ItemStack stack : inventory) {
+            if (stack.getItem().getId().equals(itemId)) {
+                stack.remove(amount);
+                if (stack.getCount() <= 0) {
+                    toRemove = stack;
+                }
+                break;
+            }
+        }
+        if (toRemove != null) {
+            inventory.remove(toRemove);
         }
     }
 
-    public boolean hasItem(String itemName, int amount) {
-        return inventory.getOrDefault(itemName, 0) >= amount;
+    public boolean hasItem(String itemId, int amount) {
+        for (ItemStack stack : inventory) {
+            if (stack.getItem().getId().equals(itemId)) {
+                return stack.getCount() >= amount;
+            }
+        }
+        return false;
     }
 
     // --- HP Logic ---
@@ -88,8 +117,6 @@ public class PlayerState {
 
     public int getHp() { return hp; }
     public int getMaxHp() { return maxHp; }
-
-    // [FIX] Setters for JSON Deserialization
     public void setHp(int hp) { this.hp = hp; }
     public void setMaxHp(int maxHp) { this.maxHp = maxHp; }
 
@@ -105,16 +132,10 @@ public class PlayerState {
         return false;
     }
 
-    public void setAttacking(boolean attacking) {
-        this.isAttacking = attacking;
-    }
-
-    public boolean isAttacking() {
-        return isAttacking;
-    }
+    public void setAttacking(boolean attacking) { this.isAttacking = attacking; }
+    public boolean isAttacking() { return isAttacking; }
 
     // --- Juice / Feedback Methods ---
-
     public void triggerKnockback(long durationMs) {
         this.isKnockedBack = true;
         this.knockbackEndTime = System.currentTimeMillis() + durationMs;
@@ -139,22 +160,15 @@ public class PlayerState {
         return isInvulnerable;
     }
 
-    public void setFacingDirection(int dir) {
-        this.facingDirection = dir;
-    }
-
-    public int getFacingDirection() {
-        return facingDirection;
-    }
+    public void setFacingDirection(int dir) { this.facingDirection = dir; }
+    public int getFacingDirection() { return facingDirection; }
 
     // Getters & Setters
     public String getPlayerId() { return playerId; }
     public void setPlayerId(String playerId) { this.playerId = playerId; }
-
     public double getX() { return x; }
     public double getY() { return y; }
     public long getLastProcessedSeqId() { return lastProcessedSeqId; }
-
     public void setX(double x) { this.x = x; }
     public void setY(double y) { this.y = y; }
     public void setLastProcessedSeqId(long seqId) { this.lastProcessedSeqId = seqId; }
