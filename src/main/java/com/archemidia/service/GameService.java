@@ -554,6 +554,25 @@ public class GameService {
                 return true;
             }
         }
+        else if (recipe.equals("Hoe")) {
+            // COST: 2 Wood, 2 Stone, 1 Rope
+            if (player.hasItem("Wood", 2) && player.hasItem("Stone", 2) && player.hasItem("Rope", 1)) {
+
+                // Prevent crafting multiple Hoes (since it's a tool)
+                if (player.hasItem("Hoe", 1)) return false;
+
+                // Deduct Ingredients
+                player.removeItem("Wood", 2);
+                player.removeItem("Stone", 2);
+                player.removeItem("Rope", 1);
+
+                // Give Hoe
+                Item item = itemRegistry.getItem("Hoe");
+                player.addItem(item, 1);
+                return true;
+            }
+        }
+
         else if (recipe.equals("Bonfire")) {
             if (player.hasItem("Wood", 10) && player.hasItem("Stone", 5)) {
                 if (player.hasItem("Bonfire", 10)) return false;
