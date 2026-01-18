@@ -9,14 +9,12 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class SpatialHashGrid<T> {
     private final int cellSize;
-    // Map<"Cell_X_Y", Set<ItemId>>
     private final Map<String, Set<String>> grid = new ConcurrentHashMap<>();
 
     public SpatialHashGrid(int cellSize) {
         this.cellSize = cellSize;
     }
 
-    // Helper: Get Cell Key from World Coordinates
     private String getKey(double x, double y) {
         int cellX = (int) (x / cellSize);
         int cellY = (int) (y / cellSize);
@@ -58,7 +56,6 @@ public class SpatialHashGrid<T> {
         int cellX = (int) (x / cellSize);
         int cellY = (int) (y / cellSize);
 
-        // Check 3x3 surrounding cells
         for (int i = -1; i <= 1; i++) {
             for (int j = -1; j <= 1; j++) {
                 String key = (cellX + i) + "_" + (cellY + j);

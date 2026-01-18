@@ -33,7 +33,6 @@ public class PersistenceService {
             data.players = players;
             data.monsters = monsters;
 
-            // Atomic Write: Save to temp, then rename
             File tempFile = new File(TEMP_FILE);
             mapper.writeValue(tempFile, data);
 
@@ -54,7 +53,6 @@ public class PersistenceService {
             return mapper.readValue(f, new TypeReference<SaveData>() {});
         } catch (IOException e) {
             System.err.println(" [Persistence] Corrupted save detected. Starting fresh.");
-            // Rename corrupted file backup
             f.renameTo(new File(DATA_FILE + ".bak_" + System.currentTimeMillis()));
             return null;
         }

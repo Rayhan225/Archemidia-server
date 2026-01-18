@@ -21,7 +21,6 @@ public class PerlinNoise {
 
     public PerlinNoise(long seed) {
         Random rand = new Random(seed);
-        // Shuffle permutation based on seed
         for (int i=0; i < 256; i++) {
             int j = rand.nextInt(256);
             int temp = permutation[i];

@@ -489,7 +489,6 @@ public class GameService {
                     .anyMatch(o -> "Crafting Table".equals(o.type) && sessionId.equals(o.ownerId));
 
             if (!ownsTable) {
-                // [UPDATED] Use ItemRegistry
                 Item table = itemRegistry.getItem("Crafting Table");
                 if (table != null) state.addItem(table, 1);
             }
@@ -507,7 +506,6 @@ public class GameService {
     }
     public PlayerState getPlayer(String sessionId) { return playerStates.get(sessionId); }
 
-    // [UPDATED]
     public PlayerState processPickup(String sessionId, String itemType) {
         PlayerState player = playerStates.get(sessionId);
         if (player != null) {
@@ -536,7 +534,6 @@ public class GameService {
         return null;
     }
 
-    // [UPDATED]
     public boolean processCrafting(String sessionId, String recipe) {
         PlayerState player = playerStates.get(sessionId);
         if (player == null) return false;
@@ -555,18 +552,18 @@ public class GameService {
             }
         }
         else if (recipe.equals("Hoe")) {
-            // COST: 2 Wood, 2 Stone, 1 Rope
+
             if (player.hasItem("Wood", 2) && player.hasItem("Stone", 2) && player.hasItem("Rope", 1)) {
 
-                // Prevent crafting multiple Hoes (since it's a tool)
+
                 if (player.hasItem("Hoe", 1)) return false;
 
-                // Deduct Ingredients
+
                 player.removeItem("Wood", 2);
                 player.removeItem("Stone", 2);
                 player.removeItem("Rope", 1);
 
-                // Give Hoe
+
                 Item item = itemRegistry.getItem("Hoe");
                 player.addItem(item, 1);
                 return true;
@@ -599,7 +596,6 @@ public class GameService {
         return false;
     }
 
-    // [UPDATED]
     public boolean processPlaceObject(String sessionId, String type, int x, int y) {
         PlayerState player = playerStates.get(sessionId);
         if (player == null || !player.hasItem(type, 1)) return false;

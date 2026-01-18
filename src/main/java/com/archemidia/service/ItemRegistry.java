@@ -15,21 +15,18 @@ public class ItemRegistry {
     }
 
     private void registerDefaults() {
-        // Materials
+
         register(new MaterialItem("Wood", "Wood", 99));
         register(new MaterialItem("Stone", "Stone", 99));
         register(new MaterialItem("Rope", "Rope", 99));
 
-        // Tools
-        // Inside registerDefaults() method:
 
-// ... existing tools ...
+
+
         register(new ToolItem("Pickaxe", "Iron Pickaxe", 2));
 
-// NEW: Register the Hoe
         register(new ToolItem("Hoe", "Stone Hoe", 1));
 
-        // Placeables (Treated as Items for inventory purposes)
         register(new Item("Crafting Table", "Crafting Table", ItemType.PLACEABLE, 1) {});
         register(new Item("Bonfire", "Bonfire", ItemType.PLACEABLE, 10) {});
         register(new Item("Fence", "Fence", ItemType.PLACEABLE, 100) {});

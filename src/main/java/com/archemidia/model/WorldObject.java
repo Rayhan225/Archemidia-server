@@ -8,10 +8,10 @@ public class WorldObject {
     public int x;
     public int y;
 
-    // [NEW] Track ownership to enforce 1-per-player limits
+    
     public String ownerId;
 
-    // --- REQUIRED FOR JSON DESERIALIZATION ---
+
     public WorldObject() {}
 
     public WorldObject(String type, int x, int y) {

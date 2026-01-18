@@ -45,7 +45,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                     try {
                         sendWorldUpdate(session, p);
                     } catch (IOException e) {
-                        // Handle disconnects gracefully
+
                     }
                 }
             }
@@ -262,7 +262,6 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             ObjectNode invMsg = objectMapper.createObjectNode();
             invMsg.put("event", "inventory_update");
 
-            // [UPDATED] Use helper to send Map to client, hiding internal complexity
             invMsg.putPOJO("items", p.getInventoryAsMap());
 
             synchronized (session) {
