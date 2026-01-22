@@ -24,7 +24,7 @@ public class GameService {
     private final Queue<PlayerState> offlinePlayers = new ConcurrentLinkedQueue<>();
 
     private final PersistenceService persistenceService;
-    private final ItemRegistry itemRegistry; // [NEW]
+    private final ItemRegistry itemRegistry;
 
     private final int TILE_SIZE = 64;
     private final double PLAYER_RADIUS = 5.0;
@@ -40,7 +40,6 @@ public class GameService {
     private final int SNOW_LIMIT = -30;
     private final int SAND_LIMIT = 30;
 
-    // [UPDATED Constructor]
     public GameService(PersistenceService persistenceService, ItemRegistry itemRegistry) {
         this.persistenceService = persistenceService;
         this.itemRegistry = itemRegistry;
@@ -324,7 +323,19 @@ public class GameService {
         }
     }
 
-    public WorldObject processInteraction(String sessionId, int targetX, int targetY) {
+    // --- NEW: Interaction Result Class ---
+    public static class InteractionResult {
+        public WorldObject object;
+        public boolean created;
+        public boolean destroyed;
+        public List<DropResult> drops = new ArrayList<>();
+        public boolean isHit;
+
+        public InteractionResult(WorldObject obj) { this.object = obj; }
+    }
+
+    // --- UPDATED: processInteraction ---
+    public InteractionResult processInteraction(String sessionId, int targetX, int targetY) {
         PlayerState player = playerStates.get(sessionId);
         if (player == null) return null;
         double playerX = player.getX();
@@ -334,10 +345,21 @@ public class GameService {
         if (player.hasItem("Pickaxe", 1)) {
             damage = 2;
         }
+        boolean hasHoe = player.hasItem("Hoe", 1);
+
+        // --- SERVER-SIDE OVERRIDE FOR HOE ---
+        // If the player has a Hoe, we force the interaction to happen exactly where they stand.
+        // This ensures the tilled earth is always directly under their feet, regardless of client aim.
+        if (hasHoe) {
+            targetX = (int) Math.floor(playerX / TILE_SIZE);
+            targetY = (int) Math.floor(playerY / TILE_SIZE);
+        }
+        // ------------------------------------
 
         double hitCenterX = (targetX * TILE_SIZE) + (TILE_SIZE / 2.0);
         double hitCenterY = (targetY * TILE_SIZE) + (TILE_SIZE / 2.0);
 
+        // 1. Check for Monsters
         Monster closestMonster = null;
         double minMonDist = 64.0;
         for (Monster m : activeMonsters.values()) {
@@ -350,13 +372,18 @@ public class GameService {
 
         if (closestMonster != null) {
             handleMonsterHit(closestMonster, sessionId, playerX, playerY, damage);
-            return closestMonster;
+            InteractionResult res = new InteractionResult(closestMonster);
+            res.isHit = true;
+            res.destroyed = (closestMonster.hp <= 0);
+            if (res.destroyed) res.drops = calculateDrops(closestMonster.type, true);
+            return res;
         }
 
         String directKey = targetX + "_" + targetY;
         WorldObject targetObj = activeObjects.get(directKey);
 
         if (targetObj == null) {
+            // Check approximate hit for bigger objects
             double minDst = Double.MAX_VALUE;
             for (int dx = -1; dx <= 1; dx++) {
                 for (int dy = -1; dy <= 1; dy++) {
@@ -372,14 +399,40 @@ public class GameService {
             }
         }
 
+        // 2. Farming Logic (Creation)
+        if (targetObj == null && hasHoe) {
+            int terrain = getTerrainAt(targetX, targetY);
+            if (terrain == 0) { // Grass
+                WorldObject farm = new WorldObject("Farmland", targetX, targetY);
+                farm.hp = 1;
+                activeObjects.put(directKey, farm);
+
+                InteractionResult res = new InteractionResult(farm);
+                res.created = true; // MARK AS CREATED
+                return res;
+            }
+        }
+
+        // 3. Object Hit Logic
         if (targetObj != null) {
+            // Prevent Hoe from breaking normal objects (optional)
+            if (!targetObj.type.equals("Farmland") && hasHoe) return null;
+
             targetObj.hp -= damage;
+            InteractionResult res = new InteractionResult(targetObj);
+            res.isHit = true;
+
             if (targetObj.hp <= 0) {
                 destroyedObjectIds.add(directKey);
                 activeObjects.remove(directKey);
+                res.destroyed = true;
+                res.drops = calculateDrops(targetObj.type, true);
+            } else {
+                res.drops = calculateDrops(targetObj.type, false);
             }
+            return res;
         }
-        return targetObj;
+        return null;
     }
 
     private void handleMonsterHit(Monster m, String sessionId, double attackerX, double attackerY, int damage) {
@@ -451,8 +504,14 @@ public class GameService {
         int tileX = (int) Math.floor(x / 64.0);
         int tileY = (int) Math.floor(y / 64.0);
         if (getTerrainAt(tileX, tileY) == -1) return true;
+
         String key = tileX + "_" + tileY;
-        return activeObjects.containsKey(key);
+        WorldObject obj = activeObjects.get(key);
+        if (obj != null) {
+            if (obj.type.equals("Farmland")) return false; // Farmland is walkable
+            return true;
+        }
+        return false;
     }
 
     private double getDistance(double x1, double y1, double x2, double y2) {
@@ -492,6 +551,8 @@ public class GameService {
                 Item table = itemRegistry.getItem("Crafting Table");
                 if (table != null) state.addItem(table, 1);
             }
+            // Give Hoe for testing if needed
+            // state.addItem(itemRegistry.getItem("Hoe"), 1);
         }
         playerStates.put(sessionId, state);
         return state;
@@ -540,7 +601,7 @@ public class GameService {
 
         if (recipe.equals("Pickaxe")) {
             if (player.hasItem("Wood", 3) && player.hasItem("Stone", 2) && player.hasItem("Rope", 1)) {
-                if (player.hasItem("Pickaxe", 1)) return false; // Prevent duplicates for tools
+                if (player.hasItem("Pickaxe", 1)) return false;
 
                 player.removeItem("Wood", 3);
                 player.removeItem("Stone", 2);
@@ -552,24 +613,18 @@ public class GameService {
             }
         }
         else if (recipe.equals("Hoe")) {
-
             if (player.hasItem("Wood", 2) && player.hasItem("Stone", 2) && player.hasItem("Rope", 1)) {
-
-
                 if (player.hasItem("Hoe", 1)) return false;
-
 
                 player.removeItem("Wood", 2);
                 player.removeItem("Stone", 2);
                 player.removeItem("Rope", 1);
-
 
                 Item item = itemRegistry.getItem("Hoe");
                 player.addItem(item, 1);
                 return true;
             }
         }
-
         else if (recipe.equals("Bonfire")) {
             if (player.hasItem("Wood", 10) && player.hasItem("Stone", 5)) {
                 if (player.hasItem("Bonfire", 10)) return false;
@@ -641,6 +696,8 @@ public class GameService {
         if (type.equals("Crafting Table")) { drops.add(new DropResult("Crafting Table", 1)); return drops; }
         if (type.equals("Bonfire")) { drops.add(new DropResult("Bonfire", 1)); return drops; }
         if (type.equals("Fence")) { drops.add(new DropResult("Fence", 1)); return drops; }
+
+        if (type.equals("Farmland")) return drops;
 
         int amount = destroyed ? ThreadLocalRandom.current().nextInt(3, 6) : 1;
         if (type.equals("Tree") || type.equals("Snow Tree") || type.equals("Palm Tree")) drops.add(new DropResult("Wood", amount));

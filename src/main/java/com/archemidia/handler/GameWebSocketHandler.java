@@ -179,34 +179,44 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 int tx = json.get("x").asInt();
                 int ty = json.get("y").asInt();
 
-                WorldObject obj = gameService.processInteraction(sessionId, tx, ty);
+                // [UPDATED] Use InteractionResult to distinguish creation from hit
+                GameService.InteractionResult res = gameService.processInteraction(sessionId, tx, ty);
 
-                if (obj != null) {
+                if (res != null) {
+                    WorldObject obj = res.object;
                     ObjectNode msg = objectMapper.createObjectNode();
                     msg.put("x", tx);
                     msg.put("y", ty);
 
-                    boolean destroyed = obj.hp <= 0;
-                    List<GameService.DropResult> drops = gameService.calculateDrops(obj.type, destroyed);
-
+                    // Case A: Monster Hit
                     if (obj instanceof Monster) {
                         msg.put("event", "monster_hit");
                         msg.put("id", obj.id);
                         msg.put("hp", obj.hp);
-                        if(destroyed) msg.put("destroyed", true);
-                    } else {
-                        if (destroyed) msg.put("event", "object_removed");
-                        else {
-                            msg.put("event", "object_hit");
-                            msg.put("hp", obj.hp);
-                        }
+                        if(res.destroyed) msg.put("destroyed", true);
+                    }
+                    // Case B: Object Created (Farming)
+                    else if (res.created) {
+                        msg.put("event", "object_placed");
+                        msg.put("type", obj.type);
+                    }
+                    // Case C: Object Destroyed
+                    else if (res.destroyed) {
+                        msg.put("event", "object_removed");
+                    }
+                    // Case D: Object Hit
+                    else {
+                        msg.put("event", "object_hit");
+                        msg.put("hp", obj.hp);
                     }
 
                     ArrayNode dropsNode = msg.putArray("drops");
-                    for(GameService.DropResult d : drops) {
-                        ObjectNode dNode = dropsNode.addObject();
-                        dNode.put("type", d.type);
-                        dNode.put("amount", d.amount);
+                    if (res.drops != null) {
+                        for(GameService.DropResult d : res.drops) {
+                            ObjectNode dNode = dropsNode.addObject();
+                            dNode.put("type", d.type);
+                            dNode.put("amount", d.amount);
+                        }
                     }
 
                     TextMessage tm = new TextMessage(msg.toString());
