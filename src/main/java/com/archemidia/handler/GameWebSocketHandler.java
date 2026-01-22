@@ -3,6 +3,7 @@ package com.archemidia.handler;
 import com.archemidia.model.Monster;
 import com.archemidia.model.PlayerState;
 import com.archemidia.model.WorldObject;
+import com.archemidia.model.minigames.TicTacToeGame;
 import com.archemidia.service.GameService;
 import com.archemidia.service.TimeService;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -175,36 +176,70 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                     sendInventoryUpdate(session, gameService.getPlayer(sessionId));
                 }
             }
+            else if ("start_ttt".equals(action)) {
+                TicTacToeGame game = gameService.startTicTacToe(sessionId);
+                sendTTTUpdate(session, game);
+            }
+            else if ("move_ttt".equals(action)) {
+                int index = json.get("index").asInt();
+                TicTacToeGame game = gameService.processTicTacToeMove(sessionId, index);
+                if (game != null) sendTTTUpdate(session, game);
+            }
+
+            else if ("open_hub".equals(action)) {
+                if (gameService.tryOpenHub(sessionId)) {
+                    ObjectNode msg = objectMapper.createObjectNode();
+                    msg.put("event", "open_window");
+                    msg.put("window", "game_hub");
+                    synchronized (session) {
+                        session.sendMessage(new TextMessage(msg.toString()));
+                    }
+                }
+            }
+            // In GameWebSocketHandler.java inside handleTextMessage -> try block
+
+            else if ("reset_ttt".equals(action)) {
+                TicTacToeGame game = gameService.resetTicTacToe(sessionId);
+                // Send the cleared board back to the client
+                if (game != null) sendTTTUpdate(session, game);
+            }
             else if ("interact".equals(action)) {
                 int tx = json.get("x").asInt();
                 int ty = json.get("y").asInt();
 
-                // [UPDATED] Use InteractionResult to distinguish creation from hit
                 GameService.InteractionResult res = gameService.processInteraction(sessionId, tx, ty);
 
                 if (res != null) {
+                    // --- NEW: UI Event Handler ---
+                    if (res.uiOpen != null) {
+                        ObjectNode msg = objectMapper.createObjectNode();
+                        msg.put("event", "open_window");
+                        msg.put("window", res.uiOpen);
+                        synchronized (session) {
+                            session.sendMessage(new TextMessage(msg.toString()));
+                        }
+                        return; // Stop processing other hit logic
+                    }
+                    // -----------------------------
+
                     WorldObject obj = res.object;
                     ObjectNode msg = objectMapper.createObjectNode();
                     msg.put("x", tx);
                     msg.put("y", ty);
 
-                    // Case A: Monster Hit
                     if (obj instanceof Monster) {
                         msg.put("event", "monster_hit");
                         msg.put("id", obj.id);
                         msg.put("hp", obj.hp);
                         if(res.destroyed) msg.put("destroyed", true);
                     }
-                    // Case B: Object Created (Farming)
                     else if (res.created) {
                         msg.put("event", "object_placed");
                         msg.put("type", obj.type);
                     }
-                    // Case C: Object Destroyed
                     else if (res.destroyed) {
                         msg.put("event", "object_removed");
                     }
-                    // Case D: Object Hit
                     else {
                         msg.put("event", "object_hit");
                         msg.put("hp", obj.hp);
@@ -277,6 +312,20 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             synchronized (session) {
                 session.sendMessage(new TextMessage(invMsg.toString()));
             }
+        }
+    }
+    private void sendTTTUpdate(WebSocketSession session, TicTacToeGame game) throws IOException {
+        ObjectNode msg = objectMapper.createObjectNode();
+        msg.put("event", "ttt_update");
+        ArrayNode boardNode = msg.putArray("board");
+        for (int cell : game.getBoard()) boardNode.add(cell);
+
+        if (game.gameOver) {
+            msg.put("winner", game.winner);
+        }
+
+        synchronized (session) {
+            session.sendMessage(new TextMessage(msg.toString()));
         }
     }
 }
