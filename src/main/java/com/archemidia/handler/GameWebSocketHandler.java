@@ -16,6 +16,7 @@ import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
+
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
@@ -46,7 +47,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                     try {
                         sendWorldUpdate(session, p);
                     } catch (IOException e) {
-
+                        // Log error or handle disconnection if needed
                     }
                 }
             }
@@ -92,12 +93,15 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
     protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
         try {
             JsonNode json = objectMapper.readTree(message.getPayload());
-            String action = json.get("action").asText();
+            String action = json.has("action") ? json.get("action").asText() : "";
             String sessionId = session.getId();
 
+            // --- CORE MOVEMENT ---
             if ("request_move".equals(action)) {
                 gameService.processMove(sessionId, json.get("x").asDouble(), json.get("y").asDouble(), json.get("seqId").asLong());
             }
+
+            // --- INVENTORY / ITEMS ---
             else if ("collect_item".equals(action)) {
                 String itemType = json.get("item").asText();
                 PlayerState p = gameService.processPickup(sessionId, itemType);
@@ -137,6 +141,8 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                     sendInventoryUpdate(session, gameService.getPlayer(sessionId));
                 }
             }
+
+            // --- WORLD OBJECTS (Placing/Removing) ---
             else if ("place_object".equals(action)) {
                 String type = json.get("type").asText();
                 int x = json.get("x").asInt();
@@ -176,6 +182,19 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                     sendInventoryUpdate(session, gameService.getPlayer(sessionId));
                 }
             }
+
+            // --- MINIGAME: PARTY MODE ---
+            else if ("start_party".equals(action)) {
+                sendJson(session, "party_update", gameService.startParty(sessionId));
+            }
+            else if ("party_hit".equals(action)) {
+                sendJson(session, "party_update", gameService.hitParty(sessionId));
+            }
+            else if ("party_miss".equals(action)) {
+                sendJson(session, "party_update", gameService.missParty(sessionId));
+            }
+
+            // --- MINIGAME: TIC-TAC-TOE ---
             else if ("start_ttt".equals(action)) {
                 TicTacToeGame game = gameService.startTicTacToe(sessionId);
                 sendTTTUpdate(session, game);
@@ -185,7 +204,12 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 TicTacToeGame game = gameService.processTicTacToeMove(sessionId, index);
                 if (game != null) sendTTTUpdate(session, game);
             }
+            else if ("reset_ttt".equals(action)) {
+                TicTacToeGame game = gameService.resetTicTacToe(sessionId);
+                if (game != null) sendTTTUpdate(session, game);
+            }
 
+            // --- GAME HUB ---
             else if ("open_hub".equals(action)) {
                 if (gameService.tryOpenHub(sessionId)) {
                     ObjectNode msg = objectMapper.createObjectNode();
@@ -196,13 +220,8 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                     }
                 }
             }
-            // In GameWebSocketHandler.java inside handleTextMessage -> try block
 
-            else if ("reset_ttt".equals(action)) {
-                TicTacToeGame game = gameService.resetTicTacToe(sessionId);
-                // Send the cleared board back to the client
-                if (game != null) sendTTTUpdate(session, game);
-            }
+            // --- GENERIC INTERACTION (Spacebar) ---
             else if ("interact".equals(action)) {
                 int tx = json.get("x").asInt();
                 int ty = json.get("y").asInt();
@@ -210,7 +229,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 GameService.InteractionResult res = gameService.processInteraction(sessionId, tx, ty);
 
                 if (res != null) {
-                    // --- NEW: UI Event Handler ---
+                    // Check if interaction opened a UI window (e.g., Crafting Table)
                     if (res.uiOpen != null) {
                         ObjectNode msg = objectMapper.createObjectNode();
                         msg.put("event", "open_window");
@@ -218,9 +237,8 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                         synchronized (session) {
                             session.sendMessage(new TextMessage(msg.toString()));
                         }
-                        return; // Stop processing other hit logic
+                        return; // Stop processing further physics logic for UI interactions
                     }
-                    // -----------------------------
 
                     WorldObject obj = res.object;
                     ObjectNode msg = objectMapper.createObjectNode();
@@ -264,6 +282,8 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
+    // --- HELPER METHODS ---
+
     private void broadcastToAll(TextMessage message) throws IOException {
         for(WebSocketSession s : activeSessions) {
             if(s.isOpen()) {
@@ -306,7 +326,6 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         if (p != null) {
             ObjectNode invMsg = objectMapper.createObjectNode();
             invMsg.put("event", "inventory_update");
-
             invMsg.putPOJO("items", p.getInventoryAsMap());
 
             synchronized (session) {
@@ -314,6 +333,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             }
         }
     }
+
     private void sendTTTUpdate(WebSocketSession session, TicTacToeGame game) throws IOException {
         ObjectNode msg = objectMapper.createObjectNode();
         msg.put("event", "ttt_update");
@@ -326,6 +346,17 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
 
         synchronized (session) {
             session.sendMessage(new TextMessage(msg.toString()));
+        }
+    }
+
+    // New Helper for Party Game JSON responses
+    private void sendJson(WebSocketSession s, String event, Object data) throws IOException {
+        if (data == null) return;
+        ObjectNode msg = objectMapper.createObjectNode();
+        msg.put("event", event);
+        msg.putPOJO("data", data);
+        synchronized(s) {
+            s.sendMessage(new TextMessage(msg.toString()));
         }
     }
 }

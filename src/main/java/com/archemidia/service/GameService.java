@@ -9,11 +9,17 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import com.archemidia.model.minigames.*;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ThreadLocalRandom;
+
+// Import the new model
+import com.archemidia.model.minigames.PartyGame;
+
+
 
 @Service
 public class GameService {
@@ -81,6 +87,28 @@ public class GameService {
             all.putIfAbsent(p.getPlayerId(), p);
         }
         return all;
+    }
+
+    // Inside GameService class...
+    private final Map<String, PartyGame> partySessions = new ConcurrentHashMap<>();
+
+    public PartyGame startParty(String sessionId) {
+        PartyGame game = new PartyGame();
+        game.start();
+        partySessions.put(sessionId, game);
+        return game;
+    }
+
+    public PartyGame hitParty(String sessionId) {
+        PartyGame game = partySessions.get(sessionId);
+        if (game != null) game.hit();
+        return game;
+    }
+
+    public PartyGame missParty(String sessionId) {
+        PartyGame game = partySessions.get(sessionId);
+        if (game != null) game.miss();
+        return game;
     }
 
     private double getHashNoise(int x, int y) {
@@ -667,4 +695,5 @@ public class GameService {
         game.reset();
         return game;
     }
+
 }
