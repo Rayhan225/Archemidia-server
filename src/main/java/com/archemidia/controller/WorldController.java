@@ -4,6 +4,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 
 @RestController
+@CrossOrigin(origins = "*")
 public class WorldController {
     private final WorldGeneratorService worldGen;
     public WorldController(WorldGeneratorService wg) { this.worldGen = wg; }

@@ -60,7 +60,12 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         gameService.onPlayerConnect(session.getId());
 
         sendInventoryUpdate(session, gameService.getPlayer(session.getId()));
+
+        // We still send this initially for fast reloads, but the client
+        // can now request it again manually when the scene changes.
         sendAllActiveObjects(session);
+
+        sendFriendListUpdate(session.getId());
     }
 
     @Override
@@ -74,7 +79,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         if (objects.isEmpty()) return;
 
         ObjectNode msg = objectMapper.createObjectNode();
-        msg.put("event", "position_update");
+        msg.put("event", "position_update"); // Reusing event handler in client
         ArrayNode arr = msg.putArray("objects");
 
         for (WorldObject obj : objects.values()) {
@@ -82,6 +87,11 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             n.put("type", obj.type);
             n.put("x", obj.x);
             n.put("y", obj.y);
+            // Add extra data for farming/crops
+            if (obj.type.equals("Farmland")) {
+                n.put("cropType", "Turnip");
+                n.put("cropStage", 0);
+            }
         }
 
         synchronized (session) {
@@ -96,9 +106,61 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             String action = json.has("action") ? json.get("action").asText() : "";
             String sessionId = session.getId();
 
+            // --- [FIX] NEW: Request World Objects manually ---
+            if ("request_world_objects".equals(action)) {
+                sendAllActiveObjects(session);
+            }
+            // --- UPDATED: PROFILE SYSTEM (Name + Avatar) ---
+else if ("set_profile".equals(action)) {
+                String desiredName = json.has("name") ? json.get("name").asText() : "";
+                int desiredAvatar = json.has("avatar") ? json.get("avatar").asInt() : 0;
+
+                // Register Name
+                boolean nameSuccess = true;
+                if (!desiredName.isEmpty()) {
+                    nameSuccess = gameService.registerName(sessionId, desiredName);
+                }
+
+                // Update Avatar
+                PlayerState p = gameService.getPlayer(sessionId);
+                if (p != null) {
+                    p.setAvatarId(desiredAvatar);
+                }
+
+                // Send Response
+                ObjectNode resp = objectMapper.createObjectNode();
+                resp.put("event", "profile_update_result");
+                resp.put("success", nameSuccess);
+                resp.put("name", (p != null) ? p.getName() : "Guest");
+                resp.put("avatar", desiredAvatar);
+
+                synchronized (session) { session.sendMessage(new TextMessage(resp.toString())); }
+
+                if (nameSuccess && !desiredName.isEmpty()) {
+                    broadcastChat("System", "SYSTEM", (p != null ? p.getName() : desiredName) + " updated their profile.");
+                }
+            }
+
             // --- CORE MOVEMENT ---
-            if ("request_move".equals(action)) {
+            else if ("request_move".equals(action)) {
                 gameService.processMove(sessionId, json.get("x").asDouble(), json.get("y").asDouble(), json.get("seqId").asLong());
+            }
+
+            // --- SET NAME ---
+            else if ("set_name".equals(action)) {
+                String desiredName = json.get("name").asText();
+                boolean success = gameService.registerName(sessionId, desiredName);
+
+                ObjectNode resp = objectMapper.createObjectNode();
+                resp.put("event", "name_set_result");
+                resp.put("success", success);
+                resp.put("name", success ? desiredName : "Guest");
+
+                synchronized (session) { session.sendMessage(new TextMessage(resp.toString())); }
+
+                if (success) {
+                    broadcastChat("System", "SYSTEM", desiredName + " has joined the world.");
+                }
             }
 
             // --- INVENTORY / ITEMS ---
@@ -221,7 +283,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 }
             }
 
-            // --- GENERIC INTERACTION (Spacebar) ---
+            // --- GENERIC INTERACTION (Spacebar / Farming / Combat) ---
             else if ("interact".equals(action)) {
                 int tx = json.get("x").asInt();
                 int ty = json.get("y").asInt();
@@ -229,7 +291,6 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 GameService.InteractionResult res = gameService.processInteraction(sessionId, tx, ty);
 
                 if (res != null) {
-                    // Check if interaction opened a UI window (e.g., Crafting Table)
                     if (res.uiOpen != null) {
                         ObjectNode msg = objectMapper.createObjectNode();
                         msg.put("event", "open_window");
@@ -237,7 +298,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                         synchronized (session) {
                             session.sendMessage(new TextMessage(msg.toString()));
                         }
-                        return; // Stop processing further physics logic for UI interactions
+                        return;
                     }
 
                     WorldObject obj = res.object;
@@ -276,6 +337,70 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                     broadcastToAll(tm);
                 }
             }
+
+            // --- CHAT SYSTEM ---
+            else if ("chat_send".equals(action)) {
+                String type = json.get("type").asText(); // "GLOBAL" or "PRIVATE"
+                String msgContent = json.get("message").asText();
+                PlayerState sender = gameService.getPlayer(sessionId);
+                String senderName = (sender != null) ? sender.getName() : "Unknown";
+
+                if (type.equals("GLOBAL")) {
+                    broadcastChat(sessionId, "[Global]", senderName + ": " + msgContent);
+                }
+                else if (type.equals("PRIVATE")) {
+                    String targetName = json.get("target").asText();
+                    String targetSessionId = gameService.getSessionByName(targetName);
+
+                    if (targetSessionId != null) {
+                        sendPrivateChat(sessionId, targetSessionId, msgContent);
+                    } else {
+                        sendSystemMessage(sessionId, "User '" + targetName + "' not found.");
+                    }
+                }
+            }
+
+            // --- FRIEND SYSTEM ---
+            else if ("friend_request".equals(action)) {
+                String targetName = json.get("targetName").asText();
+                String targetSessionId = gameService.getSessionByName(targetName);
+
+                PlayerState sender = gameService.getPlayer(sessionId);
+
+                if (targetSessionId != null && sender != null) {
+                    PlayerState target = gameService.getPlayer(targetSessionId);
+
+                    target.addFriendRequest(sender.getName());
+                    sendSystemMessage(targetSessionId, "Friend Request from: " + sender.getName());
+                    sendFriendListUpdate(targetSessionId);
+
+                    sendSystemMessage(sessionId, "Request sent to " + targetName);
+                } else {
+                    sendSystemMessage(sessionId, "Player '" + targetName + "' not found.");
+                }
+            }
+            else if ("friend_accept".equals(action)) {
+                String requesterName = json.get("targetName").asText();
+                String requesterSessionId = gameService.getSessionByName(requesterName);
+
+                PlayerState receiver = gameService.getPlayer(sessionId);
+
+                if (receiver != null && receiver.getFriendRequests().contains(requesterName)) {
+                    receiver.removeFriendRequest(requesterName);
+                    receiver.addFriend(requesterName);
+
+                    if (requesterSessionId != null) {
+                        PlayerState requester = gameService.getPlayer(requesterSessionId);
+                        requester.addFriend(receiver.getName());
+                        sendSystemMessage(requesterSessionId, receiver.getName() + " accepted your friend request!");
+                        sendFriendListUpdate(requesterSessionId);
+                    }
+
+                    sendSystemMessage(sessionId, "You are now friends with " + requesterName);
+                    sendFriendListUpdate(sessionId);
+                }
+            }
+
         } catch (Exception e) {
             System.err.println("WS Error: " + e.getMessage());
             e.printStackTrace();
@@ -294,6 +419,97 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
+    private void broadcastChat(String senderId, String channel, String message) throws IOException {
+        ObjectNode msg = objectMapper.createObjectNode();
+        msg.put("event", "chat_message");
+        msg.put("type", "GLOBAL");
+        msg.put("sender", senderId);
+        msg.put("text", message);
+
+        TextMessage tm = new TextMessage(msg.toString());
+        broadcastToAll(tm);
+    }
+
+    private void sendPrivateChat(String senderId, String targetId, String message) throws IOException {
+        PlayerState sender = gameService.getPlayer(senderId);
+        PlayerState target = gameService.getPlayer(targetId);
+
+        String sName = (sender != null) ? sender.getName() : "???";
+        String tName = (target != null) ? target.getName() : "???";
+
+        // 1. Send to Target
+        WebSocketSession targetSession = null;
+        for (WebSocketSession s : activeSessions) {
+            if (s.getId().equals(targetId)) {
+                targetSession = s;
+                break;
+            }
+        }
+
+        ObjectNode msg = objectMapper.createObjectNode();
+        msg.put("event", "chat_message");
+        msg.put("type", "PRIVATE");
+        msg.put("sender", sName); // "From"
+        msg.put("text", message);
+
+        if (targetSession != null && targetSession.isOpen()) {
+            synchronized (targetSession) {
+                targetSession.sendMessage(new TextMessage(msg.toString()));
+            }
+        }
+
+        // 2. Echo back to Sender
+        WebSocketSession senderSession = null;
+        for (WebSocketSession s : activeSessions) {
+            if (s.getId().equals(senderId)) {
+                senderSession = s;
+                break;
+            }
+        }
+
+        if (senderSession != null) {
+            ObjectNode echo = msg.deepCopy();
+            echo.put("sender", "You -> " + tName);
+            synchronized (senderSession) {
+                senderSession.sendMessage(new TextMessage(echo.toString()));
+            }
+        }
+    }
+
+    private void sendSystemMessage(String sessionId, String text) throws IOException {
+        for (WebSocketSession s : activeSessions) {
+            if (s.getId().equals(sessionId)) {
+                ObjectNode msg = objectMapper.createObjectNode();
+                msg.put("event", "chat_message");
+                msg.put("type", "SYSTEM");
+                msg.put("sender", "System");
+                msg.put("text", text);
+                synchronized (s) { s.sendMessage(new TextMessage(msg.toString())); }
+                break;
+            }
+        }
+    }
+
+    private void sendFriendListUpdate(String sessionId) throws IOException {
+        PlayerState p = gameService.getPlayer(sessionId);
+        if (p == null) return;
+
+        ObjectNode msg = objectMapper.createObjectNode();
+        msg.put("event", "friend_update");
+        ArrayNode friendsNode = msg.putArray("friends");
+        for (String f : p.getFriends()) friendsNode.add(f);
+
+        ArrayNode reqNode = msg.putArray("requests");
+        for (String r : p.getFriendRequests()) reqNode.add(r);
+
+        for (WebSocketSession s : activeSessions) {
+            if (s.getId().equals(sessionId)) {
+                synchronized (s) { s.sendMessage(new TextMessage(msg.toString())); }
+                break;
+            }
+        }
+    }
+
     private void sendWorldUpdate(WebSocketSession session, PlayerState state) throws IOException {
         ObjectNode response = objectMapper.createObjectNode();
         response.put("event", "position_update");
@@ -303,6 +519,23 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         response.put("hp", state.getHp());
         response.put("maxHp", state.getMaxHp());
 
+        // --- 1. MULTIPLAYER VISIBILITY LOGIC ---
+        ArrayNode playersNode = response.putArray("players");
+        for (PlayerState other : gameService.getOnlinePlayers()) {
+            if (other.getPlayerId().equals(session.getId())) continue;
+
+            if (Math.abs(other.getX() - state.getX()) < 1280 && Math.abs(other.getY() - state.getY()) < 1280) {
+                ObjectNode pNode = playersNode.addObject();
+                pNode.put("id", other.getPlayerId());
+                pNode.put("name", other.getName()); // Added Name
+                pNode.put("avatar", other.getAvatarId());
+                pNode.put("x", other.getX());
+                pNode.put("y", other.getY());
+                pNode.put("dir", other.getFacingDirection());
+            }
+        }
+
+        // --- 2. MONSTERS LOGIC ---
         ArrayNode monsters = response.putArray("monsters");
         Map<String, Monster> active = gameService.getActiveMonsters();
 
@@ -349,7 +582,6 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
-    // New Helper for Party Game JSON responses
     private void sendJson(WebSocketSession s, String event, Object data) throws IOException {
         if (data == null) return;
         ObjectNode msg = objectMapper.createObjectNode();

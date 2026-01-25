@@ -16,10 +16,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ThreadLocalRandom;
 
-// Import the new model
 import com.archemidia.model.minigames.PartyGame;
-
-
 
 @Service
 public class GameService {
@@ -30,6 +27,9 @@ public class GameService {
     private final List<String> destroyedObjectIds = new ArrayList<>();
     private final Queue<PlayerState> offlinePlayers = new ConcurrentLinkedQueue<>();
     private final Map<String, TicTacToeGame> tttSessions = new ConcurrentHashMap<>();
+
+    // NEW: Name Registry for Uniqueness & Lookup
+    private final Map<String, String> nameToSessionMap = new ConcurrentHashMap<>();
 
     private final PersistenceService persistenceService;
     private final ItemRegistry itemRegistry;
@@ -47,6 +47,7 @@ public class GameService {
     public static final int MAP_RADIUS = 100;
     private final int SNOW_LIMIT = -30;
     private final int SAND_LIMIT = 30;
+
 
     public GameService(PersistenceService persistenceService, ItemRegistry itemRegistry) {
         this.persistenceService = persistenceService;
@@ -81,6 +82,38 @@ public class GameService {
         persistenceService.saveData(activeObjects, collectAllPlayersForSave(), activeMonsters);
     }
 
+    // --- NEW NAME REGISTRY METHODS ---
+
+    public boolean registerName(String sessionId, String requestedName) {
+        if (requestedName == null || requestedName.trim().isEmpty()) return false;
+
+        // Case-insensitive check for existing names
+        for (String existingName : nameToSessionMap.keySet()) {
+            if (existingName.equalsIgnoreCase(requestedName)) return false;
+        }
+
+        PlayerState p = playerStates.get(sessionId);
+        if (p != null) {
+            // Unregister old name if exists (for renames, though likely used only at start)
+            if (!p.getName().equals("Unknown")) {
+                nameToSessionMap.remove(p.getName());
+            }
+
+            p.setName(requestedName);
+            nameToSessionMap.put(requestedName, sessionId);
+            return true;
+        }
+        return false;
+    }
+
+    public void unregisterName(String name) {
+        if (name != null) nameToSessionMap.remove(name);
+    }
+
+    public String getSessionByName(String name) {
+        return nameToSessionMap.get(name);
+    }
+
     private Map<String, PlayerState> collectAllPlayersForSave() {
         Map<String, PlayerState> all = new HashMap<>(playerStates);
         for (PlayerState p : offlinePlayers) {
@@ -89,7 +122,7 @@ public class GameService {
         return all;
     }
 
-    // Inside GameService class...
+    // --- Minigame Logic ---
     private final Map<String, PartyGame> partySessions = new ConcurrentHashMap<>();
 
     public PartyGame startParty(String sessionId) {
@@ -110,6 +143,31 @@ public class GameService {
         if (game != null) game.miss();
         return game;
     }
+
+    public TicTacToeGame startTicTacToe(String sessionId) {
+        TicTacToeGame game = new TicTacToeGame();
+        tttSessions.put(sessionId, game);
+        return game;
+    }
+
+    public TicTacToeGame processTicTacToeMove(String sessionId, int index) {
+        TicTacToeGame game = tttSessions.get(sessionId);
+        if (game != null) {
+            game.playerMove(index);
+        }
+        return game;
+    }
+
+    public TicTacToeGame resetTicTacToe(String sessionId) {
+        TicTacToeGame game = tttSessions.get(sessionId);
+        if (game == null) {
+            return startTicTacToe(sessionId);
+        }
+        game.reset();
+        return game;
+    }
+
+    // --- Terrain & Map Logic ---
 
     private double getHashNoise(int x, int y) {
         long seed = 12345;
@@ -134,7 +192,7 @@ public class GameService {
                 if (x * x + y * y > MAP_RADIUS * MAP_RADIUS) continue;
                 int biome = getTerrainAt(x, y);
                 if (biome == -1) continue;
-                if (x > -5 && x < 5 && y > -5 && y < 5) continue;
+                if (x > -5 && x < 5 && y > -5 && y < 5) continue; // Spawn clearing
 
                 double r = getHashNoise(x, y);
 
@@ -152,8 +210,6 @@ public class GameService {
                 }
             }
         }
-        // --- PERMANENT STRUCTURES ---
-        // Place Lighthouse at the absolute center (0,0)
         addObject("Lighthouse", 0, 0);
     }
 
@@ -161,6 +217,8 @@ public class GameService {
         String key = x + "_" + y;
         activeObjects.put(key, new WorldObject(type, x, y));
     }
+
+    // --- Game Loop & AI ---
 
     @Scheduled(fixedRate = 50)
     public void gameLoop() {
@@ -222,8 +280,6 @@ public class GameService {
         if (target != null) {
             double dist = getDistance(m.x, m.y, target.getX(), target.getY());
 
-            // ... (AI Logic omitted for brevity, it remains unchanged from previous versions) ...
-
             if (dist > CHASE_STOP_DIST) {
                 m.targetPlayerId = null;
                 m.isAggravated = (m.personality == Monster.Personality.AGGRESSIVE);
@@ -254,7 +310,6 @@ public class GameService {
             m.x = (int)newX;
             m.y = (int)newY;
         } else {
-            // Basic obstacle avoidance (try side angles)
             for (double offset : new double[]{-0.6, 0.6}) {
                 double tryAngle = angle + offset;
                 double tryX = m.x + Math.cos(tryAngle) * moveSpeed;
@@ -294,26 +349,22 @@ public class GameService {
         }
     }
 
-    // --- Interaction Result Class ---
     public static class InteractionResult {
         public WorldObject object;
         public boolean created;
         public boolean destroyed;
         public List<DropResult> drops = new ArrayList<>();
         public boolean isHit;
-        public String uiOpen; // NEW field to trigger UI events
+        public String uiOpen;
 
         public InteractionResult(WorldObject obj) { this.object = obj; }
     }
 
-    // --- processInteraction ---
     public InteractionResult processInteraction(String sessionId, int targetX, int targetY) {
         PlayerState player = playerStates.get(sessionId);
         if (player == null) return null;
         double playerX = player.getX();
         double playerY = player.getY();
-
-
 
         int damage = 1;
         if (player.hasItem("Pickaxe", 1)) {
@@ -384,10 +435,7 @@ public class GameService {
 
         // 3. Object Hit Logic
         if (targetObj != null) {
-            if (targetObj.type.equals("Lighthouse")) {
-                return null; // Just do nothing
-            }
-
+            if (targetObj.type.equals("Lighthouse")) return null;
             if (!targetObj.type.equals("Farmland") && hasHoe) return null;
 
             targetObj.hp -= damage;
@@ -485,6 +533,7 @@ public class GameService {
     public Map<String, Monster> getActiveMonsters() { return activeMonsters; }
     public Map<String, WorldObject> getActiveObjects() { return activeObjects; }
 
+    // --- Player Connect/Disconnect ---
     public PlayerState onPlayerConnect(String sessionId) {
         PlayerState state;
 
@@ -492,6 +541,12 @@ public class GameService {
             state = offlinePlayers.poll();
             String oldId = state.getPlayerId();
             state.setPlayerId(sessionId);
+
+            // Re-register name in lookup map
+            if (!state.getName().equals("Unknown")) {
+                nameToSessionMap.put(state.getName(), sessionId);
+            }
+
             for (WorldObject obj : activeObjects.values()) {
                 if (obj.ownerId != null && obj.ownerId.equals(oldId)) {
                     obj.ownerId = sessionId;
@@ -500,8 +555,8 @@ public class GameService {
             System.out.println(" [GameService] Restored player " + oldId + " -> " + sessionId);
         }
         else {
-            // Spawn below Lighthouse (0, 0)
             state = new PlayerState(sessionId, 0, 150);
+            // New players default to Unknown until they set a name via "set_name" action
 
             boolean ownsTable = activeObjects.values().stream()
                     .anyMatch(o -> "Crafting Table".equals(o.type) && sessionId.equals(o.ownerId));
@@ -518,11 +573,16 @@ public class GameService {
     public void onPlayerDisconnect(String sessionId) {
         PlayerState state = playerStates.remove(sessionId);
         if (state != null) {
+            // Remove from active name map so others can't target offline players (or you could keep it if you want offline messages)
+            unregisterName(state.getName());
+
             offlinePlayers.add(state);
             System.out.println(" [GameService] Player " + sessionId + " stored in offline queue.");
         }
     }
+
     public PlayerState getPlayer(String sessionId) { return playerStates.get(sessionId); }
+    public Collection<PlayerState> getOnlinePlayers() { return playerStates.values(); }
 
     public PlayerState processPickup(String sessionId, String itemType) {
         PlayerState player = playerStates.get(sessionId);
@@ -652,48 +712,11 @@ public class GameService {
         public String type; public int amount;
         public DropResult(String t, int a) { type = t; amount = a; }
     }
-    public TicTacToeGame startTicTacToe(String sessionId) {
-        TicTacToeGame game = new TicTacToeGame();
-        tttSessions.put(sessionId, game);
-        return game;
-    }
-
-    // 2. UPDATE: Don't delete the session on Game Over
-    public TicTacToeGame processTicTacToeMove(String sessionId, int index) {
-        TicTacToeGame game = tttSessions.get(sessionId);
-        if (game != null) {
-            game.playerMove(index);
-
-            // REMOVED: tttSessions.remove(sessionId);
-            // We keep the session active so the user can click "Reset"
-
-            if (game.gameOver) {
-                // Optional: You could log the win here
-            }
-        }
-        return game;
-    }
 
     public boolean tryOpenHub(String sessionId) {
         PlayerState player = playerStates.get(sessionId);
         if (player == null) return false;
-
-        // Check distance to Lighthouse center (0,0)
         double dist = Math.sqrt(Math.pow(player.getX(), 2) + Math.pow(player.getY(), 2));
-
-        // Allow opening if within 4 tiles (approx 256 pixels)
         return dist < (4 * 64.0);
     }
-
-    // In GameService.java
-    public TicTacToeGame resetTicTacToe(String sessionId) {
-        TicTacToeGame game = tttSessions.get(sessionId);
-        if (game == null) {
-            // If no game exists, start a new one
-            return startTicTacToe(sessionId);
-        }
-        game.reset();
-        return game;
-    }
-
 }
