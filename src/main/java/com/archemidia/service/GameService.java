@@ -27,8 +27,6 @@ public class GameService {
     private final List<String> destroyedObjectIds = new ArrayList<>();
     private final Queue<PlayerState> offlinePlayers = new ConcurrentLinkedQueue<>();
     private final Map<String, TicTacToeGame> tttSessions = new ConcurrentHashMap<>();
-
-    // NEW: Name Registry for Uniqueness & Lookup
     private final Map<String, String> nameToSessionMap = new ConcurrentHashMap<>();
 
     private final PersistenceService persistenceService;
@@ -82,19 +80,14 @@ public class GameService {
         persistenceService.saveData(activeObjects, collectAllPlayersForSave(), activeMonsters);
     }
 
-    // --- NEW NAME REGISTRY METHODS ---
-
     public boolean registerName(String sessionId, String requestedName) {
         if (requestedName == null || requestedName.trim().isEmpty()) return false;
-
-        // Case-insensitive check for existing names
         for (String existingName : nameToSessionMap.keySet()) {
             if (existingName.equalsIgnoreCase(requestedName)) return false;
         }
 
         PlayerState p = playerStates.get(sessionId);
         if (p != null) {
-            // Unregister old name if exists (for renames, though likely used only at start)
             if (!p.getName().equals("Unknown")) {
                 nameToSessionMap.remove(p.getName());
             }
@@ -122,7 +115,6 @@ public class GameService {
         return all;
     }
 
-    // --- Minigame Logic ---
     private final Map<String, PartyGame> partySessions = new ConcurrentHashMap<>();
 
     public PartyGame startParty(String sessionId) {
@@ -166,8 +158,6 @@ public class GameService {
         game.reset();
         return game;
     }
-
-    // --- Terrain & Map Logic ---
 
     private double getHashNoise(int x, int y) {
         long seed = 12345;
@@ -217,8 +207,6 @@ public class GameService {
         String key = x + "_" + y;
         activeObjects.put(key, new WorldObject(type, x, y));
     }
-
-    // --- Game Loop & AI ---
 
     @Scheduled(fixedRate = 50)
     public void gameLoop() {
@@ -380,7 +368,6 @@ public class GameService {
         double hitCenterX = (targetX * TILE_SIZE) + (TILE_SIZE / 2.0);
         double hitCenterY = (targetY * TILE_SIZE) + (TILE_SIZE / 2.0);
 
-        // 1. Check for Monsters
         Monster closestMonster = null;
         double minMonDist = 64.0;
         for (Monster m : activeMonsters.values()) {
@@ -419,7 +406,6 @@ public class GameService {
             }
         }
 
-        // 2. Farming Logic
         if (targetObj == null && hasHoe) {
             int terrain = getTerrainAt(targetX, targetY);
             if (terrain == 0) {
@@ -433,7 +419,6 @@ public class GameService {
             }
         }
 
-        // 3. Object Hit Logic
         if (targetObj != null) {
             if (targetObj.type.equals("Lighthouse")) return null;
             if (!targetObj.type.equals("Farmland") && hasHoe) return null;
@@ -532,8 +517,6 @@ public class GameService {
 
     public Map<String, Monster> getActiveMonsters() { return activeMonsters; }
     public Map<String, WorldObject> getActiveObjects() { return activeObjects; }
-
-    // --- Player Connect/Disconnect ---
     public PlayerState onPlayerConnect(String sessionId) {
         PlayerState state;
 
@@ -541,8 +524,6 @@ public class GameService {
             state = offlinePlayers.poll();
             String oldId = state.getPlayerId();
             state.setPlayerId(sessionId);
-
-            // Re-register name in lookup map
             if (!state.getName().equals("Unknown")) {
                 nameToSessionMap.put(state.getName(), sessionId);
             }
@@ -556,11 +537,8 @@ public class GameService {
         }
         else {
             state = new PlayerState(sessionId, 0, 150);
-            // New players default to Unknown until they set a name via "set_name" action
-
             boolean ownsTable = activeObjects.values().stream()
                     .anyMatch(o -> "Crafting Table".equals(o.type) && sessionId.equals(o.ownerId));
-
             if (!ownsTable) {
                 Item table = itemRegistry.getItem("Crafting Table");
                 if (table != null) state.addItem(table, 1);
@@ -573,9 +551,7 @@ public class GameService {
     public void onPlayerDisconnect(String sessionId) {
         PlayerState state = playerStates.remove(sessionId);
         if (state != null) {
-            // Remove from active name map so others can't target offline players (or you could keep it if you want offline messages)
             unregisterName(state.getName());
-
             offlinePlayers.add(state);
             System.out.println(" [GameService] Player " + sessionId + " stored in offline queue.");
         }

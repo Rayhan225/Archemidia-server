@@ -3,10 +3,7 @@ package com.archemidia.util;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * A Spatial Hash Grid for optimizing range queries (finding things nearby).
- * It divides the world into large cells (buckets).
- */
+
 public class SpatialHashGrid<T> {
     private final int cellSize;
     private final Map<String, Set<String>> grid = new ConcurrentHashMap<>();
@@ -47,10 +44,6 @@ public class SpatialHashGrid<T> {
         }
     }
 
-    /**
-     * Returns a Set of IDs located in the same cell as (x,y) and its neighbors.
-     * This drastically reduces the search space for collisions/AI.
-     */
     public Set<String> getNearby(double x, double y) {
         Set<String> nearby = new HashSet<>();
         int cellX = (int) (x / cellSize);

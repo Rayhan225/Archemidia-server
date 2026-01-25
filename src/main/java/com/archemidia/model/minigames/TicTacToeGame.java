@@ -1,17 +1,16 @@
 package com.archemidia.model.minigames;
 
 public class TicTacToeGame {
-    // 0 = Empty, 1 = Player (X), 2 = AI (O)
     private int[] board = new int[9];
     public boolean gameOver = false;
-    public String winner = null; // "Player", "AI", or "Draw"
+    public String winner = null;
 
     public int[] getBoard() { return board; }
 
     public boolean playerMove(int index) {
         if (gameOver || index < 0 || index >= 9 || board[index] != 0) return false;
 
-        board[index] = 1; // Player is 1
+        board[index] = 1;
         checkGameState();
 
         if (!gameOver) {
@@ -42,10 +41,9 @@ public class TicTacToeGame {
         }
     }
 
-    // The Brain (Minimax Algorithm)
     private int minimax(int[] b, int depth, boolean isMaximizing) {
         int result = checkWinRaw(b);
-        if (result != -1) return result; // 10 if AI wins, -10 if Player wins, 0 if Draw
+        if (result != -1) return result;
 
         if (isMaximizing) {
             int bestScore = Integer.MIN_VALUE;
@@ -82,8 +80,8 @@ public class TicTacToeGame {
         }
         boolean full = true;
         for (int i : b) if (i == 0) full = false;
-        if (full) return 0; // Draw
-        return -1; // Keep playing
+        if (full) return 0;
+        return -1;
     }
 
     private void checkGameState() {
@@ -93,10 +91,9 @@ public class TicTacToeGame {
         else if (res == 0) { gameOver = true; winner = "Draw"; }
     }
 
-    // In TicTacToeGame.java
     public void reset() {
-        this.board = new int[9]; // Clear the array
-        this.gameOver = false;   // Reset flag
-        this.winner = null;      // Reset winner
+        this.board = new int[9];
+        this.gameOver = false;   
+        this.winner = null;
     }
 }

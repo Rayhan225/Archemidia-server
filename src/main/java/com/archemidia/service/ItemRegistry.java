@@ -19,14 +19,8 @@ public class ItemRegistry {
         register(new MaterialItem("Wood", "Wood", 99));
         register(new MaterialItem("Stone", "Stone", 99));
         register(new MaterialItem("Rope", "Rope", 99));
-
-
-
-
         register(new ToolItem("Pickaxe", "Iron Pickaxe", 2));
-
         register(new ToolItem("Hoe", "Stone Hoe", 1));
-
         register(new Item("Crafting Table", "Crafting Table", ItemType.PLACEABLE, 1) {});
         register(new Item("Bonfire", "Bonfire", ItemType.PLACEABLE, 10) {});
         register(new Item("Fence", "Fence", ItemType.PLACEABLE, 100) {});

@@ -9,9 +9,9 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 public class PlayerState {
-    private String playerId; // This is the Session ID
-    private String name = "Unknown"; // NEW: The visible, unique player name
-    private int avatarId = 0; // NEW: 0=Default, 1=Red, 2=Green, 3=Blue (Simple implementation)
+    private String playerId;
+    private String name = "Unknown";
+    private int avatarId = 0;
 
     private double x;
     private double y;
@@ -31,7 +31,6 @@ public class PlayerState {
 
     private int facingDirection = 0;
 
-    // --- Chat & Friends (Stored as Names) ---
     private List<String> friends = new ArrayList<>();
     private List<String> friendRequests = new ArrayList<>();
 
@@ -53,7 +52,6 @@ public class PlayerState {
     public int getAvatarId() { return avatarId; }
     public void setAvatarId(int avatarId) { this.avatarId = avatarId; }
 
-    // --- Name & Friend Logic ---
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
 
@@ -74,7 +72,6 @@ public class PlayerState {
         friendRequests.remove(requesterName);
     }
 
-    // --- Inventory Logic ---
     public List<ItemStack> getInventory() { return inventory; }
     public void setInventory(List<ItemStack> inventory) { this.inventory = inventory; }
 
@@ -121,7 +118,6 @@ public class PlayerState {
         return false;
     }
 
-    // --- Combat & Status Logic ---
     public void damage(int amount) {
         if (isInvulnerable()) return;
 

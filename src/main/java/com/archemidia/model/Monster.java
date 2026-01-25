@@ -43,7 +43,7 @@ public class Monster extends WorldObject {
         this.personality = Personality.values()[new Random().nextInt(Personality.values().length)];
 
         if (this.personality == Personality.AGGRESSIVE) {
-            this.speed = 2.4; // Even Faster
+            this.speed = 2.4; 
             this.isAggravated = true;
         } else if (this.personality == Personality.LAZY) {
             this.speed = 1.2;

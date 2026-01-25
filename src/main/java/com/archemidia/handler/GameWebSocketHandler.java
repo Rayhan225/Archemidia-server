@@ -47,7 +47,6 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                     try {
                         sendWorldUpdate(session, p);
                     } catch (IOException e) {
-                        // Log error or handle disconnection if needed
                     }
                 }
             }
@@ -61,8 +60,6 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
 
         sendInventoryUpdate(session, gameService.getPlayer(session.getId()));
 
-        // We still send this initially for fast reloads, but the client
-        // can now request it again manually when the scene changes.
         sendAllActiveObjects(session);
 
         sendFriendListUpdate(session.getId());
@@ -79,7 +76,7 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         if (objects.isEmpty()) return;
 
         ObjectNode msg = objectMapper.createObjectNode();
-        msg.put("event", "position_update"); // Reusing event handler in client
+        msg.put("event", "position_update");
         ArrayNode arr = msg.putArray("objects");
 
         for (WorldObject obj : objects.values()) {
@@ -106,28 +103,23 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             String action = json.has("action") ? json.get("action").asText() : "";
             String sessionId = session.getId();
 
-            // --- [FIX] NEW: Request World Objects manually ---
             if ("request_world_objects".equals(action)) {
                 sendAllActiveObjects(session);
             }
-            // --- UPDATED: PROFILE SYSTEM (Name + Avatar) ---
 else if ("set_profile".equals(action)) {
                 String desiredName = json.has("name") ? json.get("name").asText() : "";
                 int desiredAvatar = json.has("avatar") ? json.get("avatar").asInt() : 0;
 
-                // Register Name
                 boolean nameSuccess = true;
                 if (!desiredName.isEmpty()) {
                     nameSuccess = gameService.registerName(sessionId, desiredName);
                 }
 
-                // Update Avatar
                 PlayerState p = gameService.getPlayer(sessionId);
                 if (p != null) {
                     p.setAvatarId(desiredAvatar);
                 }
 
-                // Send Response
                 ObjectNode resp = objectMapper.createObjectNode();
                 resp.put("event", "profile_update_result");
                 resp.put("success", nameSuccess);
@@ -141,12 +133,10 @@ else if ("set_profile".equals(action)) {
                 }
             }
 
-            // --- CORE MOVEMENT ---
             else if ("request_move".equals(action)) {
                 gameService.processMove(sessionId, json.get("x").asDouble(), json.get("y").asDouble(), json.get("seqId").asLong());
             }
 
-            // --- SET NAME ---
             else if ("set_name".equals(action)) {
                 String desiredName = json.get("name").asText();
                 boolean success = gameService.registerName(sessionId, desiredName);
@@ -163,7 +153,6 @@ else if ("set_profile".equals(action)) {
                 }
             }
 
-            // --- INVENTORY / ITEMS ---
             else if ("collect_item".equals(action)) {
                 String itemType = json.get("item").asText();
                 PlayerState p = gameService.processPickup(sessionId, itemType);
@@ -204,7 +193,6 @@ else if ("set_profile".equals(action)) {
                 }
             }
 
-            // --- WORLD OBJECTS (Placing/Removing) ---
             else if ("place_object".equals(action)) {
                 String type = json.get("type").asText();
                 int x = json.get("x").asInt();
@@ -245,7 +233,6 @@ else if ("set_profile".equals(action)) {
                 }
             }
 
-            // --- MINIGAME: PARTY MODE ---
             else if ("start_party".equals(action)) {
                 sendJson(session, "party_update", gameService.startParty(sessionId));
             }
@@ -256,7 +243,6 @@ else if ("set_profile".equals(action)) {
                 sendJson(session, "party_update", gameService.missParty(sessionId));
             }
 
-            // --- MINIGAME: TIC-TAC-TOE ---
             else if ("start_ttt".equals(action)) {
                 TicTacToeGame game = gameService.startTicTacToe(sessionId);
                 sendTTTUpdate(session, game);
@@ -271,7 +257,6 @@ else if ("set_profile".equals(action)) {
                 if (game != null) sendTTTUpdate(session, game);
             }
 
-            // --- GAME HUB ---
             else if ("open_hub".equals(action)) {
                 if (gameService.tryOpenHub(sessionId)) {
                     ObjectNode msg = objectMapper.createObjectNode();
@@ -283,7 +268,6 @@ else if ("set_profile".equals(action)) {
                 }
             }
 
-            // --- GENERIC INTERACTION (Spacebar / Farming / Combat) ---
             else if ("interact".equals(action)) {
                 int tx = json.get("x").asInt();
                 int ty = json.get("y").asInt();
@@ -338,7 +322,6 @@ else if ("set_profile".equals(action)) {
                 }
             }
 
-            // --- CHAT SYSTEM ---
             else if ("chat_send".equals(action)) {
                 String type = json.get("type").asText(); // "GLOBAL" or "PRIVATE"
                 String msgContent = json.get("message").asText();
@@ -360,7 +343,6 @@ else if ("set_profile".equals(action)) {
                 }
             }
 
-            // --- FRIEND SYSTEM ---
             else if ("friend_request".equals(action)) {
                 String targetName = json.get("targetName").asText();
                 String targetSessionId = gameService.getSessionByName(targetName);
@@ -407,8 +389,6 @@ else if ("set_profile".equals(action)) {
         }
     }
 
-    // --- HELPER METHODS ---
-
     private void broadcastToAll(TextMessage message) throws IOException {
         for(WebSocketSession s : activeSessions) {
             if(s.isOpen()) {
@@ -437,7 +417,6 @@ else if ("set_profile".equals(action)) {
         String sName = (sender != null) ? sender.getName() : "???";
         String tName = (target != null) ? target.getName() : "???";
 
-        // 1. Send to Target
         WebSocketSession targetSession = null;
         for (WebSocketSession s : activeSessions) {
             if (s.getId().equals(targetId)) {
@@ -458,7 +437,6 @@ else if ("set_profile".equals(action)) {
             }
         }
 
-        // 2. Echo back to Sender
         WebSocketSession senderSession = null;
         for (WebSocketSession s : activeSessions) {
             if (s.getId().equals(senderId)) {
@@ -519,7 +497,6 @@ else if ("set_profile".equals(action)) {
         response.put("hp", state.getHp());
         response.put("maxHp", state.getMaxHp());
 
-        // --- 1. MULTIPLAYER VISIBILITY LOGIC ---
         ArrayNode playersNode = response.putArray("players");
         for (PlayerState other : gameService.getOnlinePlayers()) {
             if (other.getPlayerId().equals(session.getId())) continue;
@@ -534,8 +511,7 @@ else if ("set_profile".equals(action)) {
                 pNode.put("dir", other.getFacingDirection());
             }
         }
-
-        // --- 2. MONSTERS LOGIC ---
+        
         ArrayNode monsters = response.putArray("monsters");
         Map<String, Monster> active = gameService.getActiveMonsters();
 
